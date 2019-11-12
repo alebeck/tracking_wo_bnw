@@ -1,0 +1,5 @@
+plotter:
+  name: boxes_4
+  module_name: MOT17
+  dataset: mot17_train_FRCNN17
+  boxes_dir: boxes

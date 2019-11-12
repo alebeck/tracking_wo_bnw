@@ -114,6 +114,8 @@ def plot_sequence(tracks, db, output_dir):
 		fig.add_axes(ax)
 		ax.imshow(im)
 
+		ax.text(10, 20, f'im_index: {i}', fontsize=12)
+
 		for j, t in tracks.items():
 			if i in t.keys():
 				t_i = t[i]
