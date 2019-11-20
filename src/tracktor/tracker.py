@@ -8,7 +8,7 @@ from scipy.optimize import linear_sum_assignment
 import cv2
 
 from frcnn.model.nms_wrapper import nms
-from .utils import bbox_overlaps, bbox_transform_inv, warp_pos, clip_boxes, get_center, get_height, get_width, make_pos
+from .utils import bbox_overlaps, bbox_transform_inv, warp_pos, clip_boxes
 
 
 class Tracker:
@@ -16,9 +16,10 @@ class Tracker:
 	# only track pedestrian
 	cl = 1
 
-	def __init__(self, obj_detect, reid_network, tracker_cfg):
+	def __init__(self, obj_detect, reid_network, motion_network, tracker_cfg, motion_cfg):
 		self.obj_detect = obj_detect
 		self.reid_network = reid_network
+		self.motion_network = motion_network
 		self.detection_person_thresh = tracker_cfg['detection_person_thresh']
 		self.regression_person_thresh = tracker_cfg['regression_person_thresh']
 		self.detection_nms_thresh = tracker_cfg['detection_nms_thresh']
@@ -30,7 +31,8 @@ class Tracker:
 		self.reid_sim_threshold = tracker_cfg['reid_sim_threshold']
 		self.reid_iou_threshold = tracker_cfg['reid_iou_threshold']
 		self.do_align = tracker_cfg['do_align']
-		self.motion_model_cfg = tracker_cfg['motion_model']
+		self.motion_model_enabled = tracker_cfg['motion_model_enabled']
+		self.motion_cfg = motion_cfg
 
 		self.warp_mode = eval(tracker_cfg['warp_mode'])
 		self.number_of_iterations = tracker_cfg['number_of_iterations']
@@ -41,6 +43,9 @@ class Tracker:
 		self.track_num = 0
 		self.im_index = 0
 		self.results = {}
+
+		self.data_mean = torch.Tensor(motion_cfg['data_mean']).cuda()
+		self.data_std = torch.Tensor(motion_cfg['data_std']).cuda()
 
 	def reset(self, hard=True):
 		self.tracks = []
@@ -68,7 +73,7 @@ class Tracker:
 				new_det_features[i].view(1, -1),
 				self.inactive_patience,
 				self.max_features_num,
-				self.motion_model_cfg['n_steps'] if self.motion_model_cfg['n_steps'] > 0 else 1
+				self.motion_cfg['network_args']['input_length']
 			))
 		self.track_num += num_new
 
@@ -209,37 +214,29 @@ class Tracker:
 				for t in self.inactive_tracks:
 					t.pos = warp_pos(t.pos, warp_matrix)
 
-			if self.motion_model_cfg['enabled']:
+			if self.motion_model_enabled:
 				for t in self.tracks:
 					for i in range(len(t.last_pos)):
 						t.last_pos[i] = warp_pos(t.last_pos[i], warp_matrix)
 
-	def motion_step(self, track):
-		"""Updates the given track's position by one step based on track.last_v"""
-		if self.motion_model_cfg['center_only']:
-			center_new = get_center(track.pos) + track.last_v
-			track.pos = make_pos(*center_new, get_width(track.pos), get_height(track.pos))
-		else:
-			track.pos = track.pos + track.last_v
-
 	def motion(self):
-		"""Applies a simple linear motion model that considers the last n_steps steps."""
 		for t in self.tracks:
-			last_pos = list(t.last_pos)
+			last_pos = torch.cat(list(t.last_pos), dim=0)
+			if len(last_pos) <= 1:
+				continue
 
-			# avg velocity between each pair of consecutive positions in t.last_pos
-			if self.motion_model_cfg['center_only']:
-				vs = [get_center(p2) - get_center(p1) for p1, p2 in zip(last_pos, last_pos[1:])]
-			else:
-				vs = [p2 - p1 for p1, p2 in zip(last_pos, last_pos[1:])]
+			last_pos_diff = last_pos[1:] - last_pos[:-1]
+			last_pos_diff = (last_pos_diff - self.data_mean) / self.data_std
+			last_pos_diff = torch.cat([last_pos_diff, torch.zeros(len(last_pos_diff), 2).cuda()], dim=1)
+			last_pos_diff[:, 5] = 1
 
-			t.last_v = torch.stack(vs).mean(dim=0)
-			self.motion_step(t)
+			# pad
+			padding = torch.zeros(self.motion_cfg['network_args']['input_length'] - len(last_pos_diff), 6).cuda()
+			padded = torch.cat([padding, last_pos_diff], dim=0)
+			prediction = self.motion_network.predict(padded.unsqueeze(0), 1)
+			prediction = prediction.data[0, 0, :4] * self.data_std + self.data_mean
 
-		if self.do_reid:
-			for t in self.inactive_tracks:
-				if t.last_v.nelement() > 0:
-					self.motion_step(t)
+			t.pos = t.pos + prediction
 
 	def step(self, blob):
 		"""This function should be called every timestep to perform tracking with a blob
@@ -294,7 +291,7 @@ class Tracker:
 				self.align(blob)
 
 			# apply motion model
-			if self.motion_model_cfg['enabled']:
+			if self.motion_model_enabled:
 				self.motion()
 				self.tracks = [t for t in self.tracks if t.has_positive_area()]
 
@@ -395,7 +392,7 @@ class Track(object):
 		self.count_inactive = 0
 		self.inactive_patience = inactive_patience
 		self.max_features_num = max_features_num
-		self.last_pos = deque([pos.clone()], maxlen=mm_steps + 1)
+		self.last_pos = deque([], maxlen=mm_steps + 1)
 		self.last_v = torch.Tensor([])
 		self.gt_id = None
 

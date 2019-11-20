@@ -18,6 +18,20 @@ tracktor:
   reid_network_weights: output/tracktor/siamese/res50-mot17-batch_hard/ResNet_iter_25245.pth
   reid_network_config: output/tracktor/siamese/res50-mot17-batch_hard/sacred_config.yaml
 
+  # motion model parameters
+  motion:
+    network_args:
+      input_size: 6
+      hidden_size: 48
+      output_size: 6
+      input_length: 40
+      n_layers: 2
+      dropout: 0.
+
+    network_weights: output/motion/checkpoint_17.pt
+    data_mean: [-0.0901, -0.1213,  0.0529,  0.3032]
+    data_std: [4.1137, 2.1125, 3.9754, 2.4975]
+
   interpolate: False
   # compile video with: `ffmpeg -f image2 -framerate 15 -i %06d.jpg -vcodec libx264 -y movie.mp4 -vf scale=320:-1`
   write_images: False
@@ -35,13 +49,8 @@ tracktor:
     detection_nms_thresh: 0.3
     # NMS theshold while tracking
     regression_nms_thresh: 0.6
-    # motion model settings
-    motion_model:
-      enabled: False
-      # average velocity over last n_steps steps
-      n_steps: 1
-      # if true, only model the movement of the bounding box center. If false, width and height are also modeled.
-      center_only: True
+    # activate motion model
+    motion_model_enabled: True
     # DPM or DPM_RAW or 0, raw includes the unfiltered (no nms) versions of the provided detections,
     # 0 tells the tracker to use private detections (Faster R-CNN)
     public_detections: True
