@@ -37,6 +37,7 @@ tracktor:
   write_images: False
   # dataset (look into tracker/datasets/factory.py)
   dataset: mot17_train_FRCNN17
+  dataset_args: {}
   # [start percentage, end percentage], e.g., [0.0, 0.5] for train and [0.75, 1.0] for val split.
   frame_split: [0.0, 1.0]
 

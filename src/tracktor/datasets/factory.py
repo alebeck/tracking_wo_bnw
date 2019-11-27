@@ -12,31 +12,29 @@ _sets = {}
 for split in ['train', 'test', 'all', '01', '02', '03', '04', '05', '06', '07', '08', '09',
               '10', '11', '12', '13', '14']:
     for dets in ['DPM16', 'DPM_RAW16', 'DPM17', 'FRCNN17', 'SDP17', '17', '']:
-        name = f'mot17_{split}_{dets}'
-        _sets[name] = (lambda *args, split=split,
-                       dets=dets: MOT17_Wrapper(split, dets, *args))
+        _sets[f'mot17_{split}_{dets}'] = (lambda split=split, dets=dets, **args: MOT17_Wrapper(split, dets, **args))
 
 for split in ['train', 'test', 'all', '01', '02', '03', '04', '05', '06', '07', '08']:
     # only FRCNN detections
     name = f'mot19_cvpr_{split}'
-    _sets[name] = (lambda *args, split=split: MOT19CVPR_Wrapper(split, *args))
+    _sets[name] = (lambda split=split, **args: MOT19CVPR_Wrapper(split, **args))
 
 for split in ['1', '2', '3', '5', '6', '10', '15', '30']:
     # only FRCNN detections
     name = f'mot17_{split}_fps'
-    _sets[name] = (lambda *args, split=split: MOT17LOWFPS_Wrapper(split, *args))
+    _sets[name] = (lambda split=split, **args: MOT17LOWFPS_Wrapper(split, **args))
 
 for split in ['train', 'smallVal', 'smallTrain']:
     name = f'motSiamese_{split}'
-    _sets[name] = (lambda *args, split=split: MOT_Siamese_Wrapper(split, *args))
+    _sets[name] = (lambda split=split, **args: MOT_Siamese_Wrapper(split, **args))
 
 for split in ['PETS09-S2L1', 'TUD-Stadtmitte', 'TUD-Campus', 'train', 'test', 'last3train']:
     name = f'mot15_{split}'
-    _sets[name] = (lambda *args, split=split: MOT15_Wrapper(split, *args))
+    _sets[name] = (lambda split=split, **args: MOT15_Wrapper(split, **args))
 
 for split in ['smallTrain', 'smallVal', 'train']:
     name = f'marcuhmot_{split}'
-    _sets[name] = (lambda *args, split=split: MarCUHMOT(split, *args))
+    _sets[name] = (lambda split=split, **args: MarCUHMOT(split, **args))
 
 
 class Datasets(object):
@@ -46,7 +44,7 @@ class Datasets(object):
     can be accessed.
     """
 
-    def __init__(self, dataset, *args):
+    def __init__(self, dataset, **args):
         """Initialize the corresponding dataloader.
 
         Keyword arguments:
@@ -56,9 +54,9 @@ class Datasets(object):
         assert dataset in _sets, "[!] Dataset not found: {}".format(dataset)
 
         if len(args) == 0:
-            args = [{}]
+            args = {}
 
-        self._data = _sets[dataset](*args)
+        self._data = _sets[dataset](**args)
 
     def __len__(self):
         return len(self._data)

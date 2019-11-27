@@ -1,18 +1,18 @@
 import torch
 from torch.utils.data import Dataset
 
-from .mot_sequence import MOT17_Sequence, MOT19CVPR_Sequence, MOT17LOWFPS_Sequence
+from .mot_sequence import MOT17_Sequence, MOT17_Sequence_HDF5, MOT19CVPR_Sequence, MOT17LOWFPS_Sequence
 
 
 class MOT17_Wrapper(Dataset):
 	"""A Wrapper for the MOT_Sequence class to return multiple sequences."""
 
-	def __init__(self, split, dets, dataloader):
+	def __init__(self, split, dets, **args):
 		"""Initliazes all subset of the dataset.
 
 		Keyword arguments:
 		split -- the split of the dataset to use
-		dataloader -- args for the MOT_Sequence dataloader
+		args -- args for the MOT_Sequence dataloader
 		"""
 		train_sequences = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-09', 'MOT17-10', 'MOT17-11', 'MOT17-13']
 		test_sequences = ['MOT17-01', 'MOT17-03', 'MOT17-06', 'MOT17-07', 'MOT17-08', 'MOT17-12', 'MOT17-14']
@@ -30,12 +30,13 @@ class MOT17_Wrapper(Dataset):
 
 		self._data = []
 		for s in sequences:
+			seq_class = MOT17_Sequence_HDF5 if 'hdf5_path' in args else MOT17_Sequence
 			if dets == '17':
-				self._data.append(MOT17_Sequence(seq_name=s, dets='DPM17', **dataloader))
-				self._data.append(MOT17_Sequence(seq_name=s, dets='FRCNN17', **dataloader))
-				self._data.append(MOT17_Sequence(seq_name=s, dets='SDP17', **dataloader))
+				self._data.append(seq_class(seq_name=s, dets='DPM17', **args))
+				self._data.append(seq_class(seq_name=s, dets='FRCNN17', **args))
+				self._data.append(seq_class(seq_name=s, dets='SDP17', **args))
 			else:
-				self._data.append(MOT17_Sequence(seq_name=s, dets=dets, **dataloader))
+				self._data.append(seq_class(seq_name=s, dets=dets, **args))
 
 	def __len__(self):
 		return len(self._data)

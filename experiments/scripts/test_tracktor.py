@@ -129,14 +129,14 @@ def my_main(tracktor, siamese, _config):
     print("[*] Beginning evaluation...")
 
     time_total = 0
-    for sequence in Datasets(tracktor['dataset']):
+    for sequence in Datasets(tracktor['dataset'], **tracktor['dataset_args']):
         tracker.reset()
 
         now = time.time()
 
         print("[*] Evaluating: {}".format(sequence))
 
-        data_loader = DataLoader(sequence, batch_size=1, shuffle=False)
+        data_loader = DataLoader(sequence, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
         for i, frame in enumerate(data_loader):
             if len(sequence) * tracktor['frame_split'][0] <= i <= len(sequence) * tracktor['frame_split'][1]:
                 tracker.step(frame)

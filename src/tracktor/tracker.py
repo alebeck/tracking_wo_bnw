@@ -133,6 +133,7 @@ class Tracker:
 
 	def reid(self, blob, new_det_pos, new_det_scores):
 		"""Tries to ReID inactive tracks with provided detections."""
+		#new_det_features = self.reid_network.test_rois(blob['app_data'], new_det_pos / blob['im_info'][0][2]).data
 		new_det_features = self.reid_network.test_rois(blob['app_data'][0], new_det_pos / blob['im_info'][0][2]).data
 		if len(self.inactive_tracks) >= 1 and self.do_reid:
 			# calculate appearance distances
@@ -186,6 +187,7 @@ class Tracker:
 
 	def get_appearances(self, blob):
 		"""Uses the siamese CNN to get the features for all active tracks."""
+		#new_features = self.reid_network.test_rois(blob['app_data'], self.get_pos() / blob['im_info'][0][2]).data
 		new_features = self.reid_network.test_rois(blob['app_data'][0], self.get_pos() / blob['im_info'][0][2]).data
 		return new_features
 
@@ -198,7 +200,7 @@ class Tracker:
 		"""Aligns the positions of active and inactive tracks depending on camera motion."""
 		if self.im_index > 0:
 			im1 = self.last_image.cpu().numpy()
-			im2 = blob['data'][0][0].cpu().numpy()
+			im2 = blob['data'][0].cpu().numpy()
 			im1_gray = cv2.cvtColor(im1, cv2.COLOR_BGR2GRAY)
 			im2_gray = cv2.cvtColor(im2, cv2.COLOR_BGR2GRAY)
 			warp_matrix = np.eye(2, 3, dtype=np.float32)
@@ -249,8 +251,9 @@ class Tracker:
 		###########################
 		# Look for new detections #
 		###########################
-
+		#self.obj_detect.set_features(blob['data'], blob['features'], blob['im_info'])
 		self.obj_detect.load_image(blob['data'][0], blob['im_info'][0])
+
 		if self.public_detections:
 			dets = blob['dets']
 			if len(dets) > 0:
@@ -374,6 +377,7 @@ class Tracker:
 		]
 
 		self.im_index += 1
+		#self.last_image = blob['data'][0]
 		self.last_image = blob['data'][0][0]
 
 	def get_results(self):
