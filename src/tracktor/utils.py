@@ -50,6 +50,13 @@ colors = [
 ]
 
 
+def seed_everything(seed=12345):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
+
 # From frcnn/utils/bbox.py
 def bbox_overlaps(boxes, query_boxes):
     """
@@ -110,14 +117,14 @@ def plot_sequence(tracks, db, output_dir):
         height = float(sizes[0])
         width = float(sizes[1])
 
-		fig = plt.figure()
-		fig.set_size_inches(width / 100, height / 100)
-		ax = plt.Axes(fig, [0., 0., 1., 1.])
-		ax.set_axis_off()
-		fig.add_axes(ax)
-		ax.imshow(im)
+        fig = plt.figure()
+        fig.set_size_inches(width / 100, height / 100)
+        ax = plt.Axes(fig, [0., 0., 1., 1.])
+        ax.set_axis_off()
+        fig.add_axes(ax)
+        ax.imshow(im)
 
-		ax.text(10, 20, f'im_index: {i}', fontsize=12)
+        ax.text(10, 20, f'im_index: {i}', fontsize=12)
 
         for j, t in tracks.items():
             if i in t.keys():
@@ -377,16 +384,20 @@ def get_mot_accum(results, seq):
     return mot_accum
 
 
-def evaluate_mot_accums(accums, names, generate_overall=False):
+def evaluate_mot_accums(accums, names, generate_overall=False, return_summary=False, metrics=mm.metrics.motchallenge_metrics):
     mh = mm.metrics.create()
     summary = mh.compute_many(
         accums,
-        metrics=mm.metrics.motchallenge_metrics,
+        metrics=metrics,
         names=names,
-        generate_overall=generate_overall,)
-
+        generate_overall=generate_overall
+    )
     str_summary = mm.io.render_summary(
         summary,
         formatters=mh.formatters,
-        namemap=mm.io.motchallenge_metric_names,)
+        namemap=mm.io.motchallenge_metric_names
+    )
     print(str_summary)
+
+    if return_summary:
+        return summary

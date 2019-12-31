@@ -3,19 +3,19 @@ from collections import deque
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.autograd import Variable
 from scipy.optimize import linear_sum_assignment
 import cv2
 
-from .utils import bbox_overlaps, bbox_transform_inv, warp_pos, clip_boxes
+from .utils import bbox_overlaps, warp_pos
 from torchvision.ops.boxes import clip_boxes_to_image, nms
+
 
 class Tracker:
 	"""The main tracking file, here is where magic happens."""
 	# only track pedestrian
 	cl = 1
 
-	def __init__(self, obj_detect, reid_network, motion_network, tracker_cfg, motion_cfg):
+	def __init__(self, obj_detect, reid_network, motion_network, tracker_cfg, motion_cfg, min_length):
 		self.obj_detect = obj_detect
 		self.reid_network = reid_network
 		self.motion_network = motion_network
@@ -32,6 +32,7 @@ class Tracker:
 		self.do_align = tracker_cfg['do_align']
 		self.motion_model_enabled = tracker_cfg['motion_model_enabled']
 		self.motion_cfg = motion_cfg
+		self.min_length = min_length
 
 		self.warp_mode = eval(tracker_cfg['warp_mode'])
 		self.number_of_iterations = tracker_cfg['number_of_iterations']
@@ -42,6 +43,7 @@ class Tracker:
 		self.track_num = 0
 		self.im_index = 0
 		self.results = {}
+		self.last_warps = []
 
 		self.data_mean = torch.Tensor(motion_cfg['data_mean']).cuda()
 		self.data_std = torch.Tensor(motion_cfg['data_std']).cuda()
@@ -54,6 +56,7 @@ class Tracker:
 			self.track_num = 0
 			self.results = {}
 			self.im_index = 0
+			self.last_warps = []
 
 	def tracks_to_inactive(self, tracks):
 		self.tracks = [t for t in self.tracks if t not in tracks]
@@ -132,8 +135,7 @@ class Tracker:
 		new_det_features = [torch.zeros(0).cuda() for _ in range(len(new_det_pos))]
 
 		if self.do_reid:
-			new_det_features = self.reid_network.test_rois(
-				blob['img'], new_det_pos).data
+			new_det_features = self.reid_network.test_rois(blob['img'], new_det_pos).data
 
 			if len(self.inactive_tracks) >= 1:
 				# calculate appearance distances
@@ -221,24 +223,57 @@ class Tracker:
 					for i in range(len(t.last_pos)):
 						t.last_pos[i] = warp_pos(t.last_pos[i], warp_matrix)
 
-	def motion(self):
+	def calculate_cmc(self, blob):
+		if self.im_index > 0:
+			im1 = np.transpose(self.last_image.cpu().numpy(), (1, 2, 0))
+			im2 = np.transpose(blob['img'][0].cpu().numpy(), (1, 2, 0))
+			im1_gray = cv2.cvtColor(im1, cv2.COLOR_RGB2GRAY)
+			im2_gray = cv2.cvtColor(im2, cv2.COLOR_RGB2GRAY)
+			warp_matrix = np.eye(2, 3, dtype=np.float32)
+			criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, self.number_of_iterations,  self.termination_eps)
+			cc, warp_matrix = cv2.findTransformECC(im1_gray, im2_gray, warp_matrix, self.warp_mode, criteria)
+			warp_matrix = torch.from_numpy(warp_matrix)
+		else:
+			warp_matrix = torch.zeros(2, 3)
+			warp_matrix[0, 0] = 1.
+			warp_matrix[1, 1] = 1.
+
+		self.last_warps.append(warp_matrix.cuda())
+
+	def motion(self, blob):
 		for t in self.tracks:
-			last_pos = torch.cat(list(t.last_pos), dim=0)
-			if len(last_pos) <= 1:
+			assert len(t.last_pos) > 0
+
+			if len(t.last_pos) < self.min_length - 1:  # TODO account for target length != 1
+				# we have a sequence length that the model was not trained for, resort to CVA-5
+				if not len(t.last_pos) == 1:
+					last_pos = torch.cat(list(t.last_pos), dim=0)
+					diff = last_pos[1:] - last_pos[:-1]
+					t.pos = clip_boxes_to_image(t.pos + diff[-5:, :4].mean(0), blob['img'].shape[-2:])
 				continue
 
-			last_pos_diff = last_pos[1:] - last_pos[:-1]
-			last_pos_diff = (last_pos_diff - self.data_mean) / self.data_std
-			last_pos_diff = torch.cat([last_pos_diff, torch.zeros(len(last_pos_diff), 2).cuda()], dim=1)
-			last_pos_diff[:, 5] = 1
+			# create cmc features
+			last_warps = torch.stack(self.last_warps[-len(t.last_pos):]).view(len(t.last_pos), 6)
 
-			# pad
-			padding = torch.zeros(self.motion_cfg['network_args']['input_length'] - len(last_pos_diff), 6).cuda()
-			padded = torch.cat([padding, last_pos_diff], dim=0)
-			prediction = self.motion_network.predict(padded.unsqueeze(0), 1)
-			prediction = prediction.data[0, 0, :4] * self.data_std + self.data_mean
+			if len(t.last_pos) > 1:
+				last_pos = torch.cat(list(t.last_pos), dim=0)
+				diff = last_pos[1:] - last_pos[:-1]
+				diff = (diff - self.data_mean) / self.data_std  # normalization
+				diff = torch.cat([diff, last_warps[:-1], torch.zeros(diff.shape[0], 2).cuda()], dim=1)
+				diff[:, 11] = 1  # not padding
+				t.pos = t.pos + diff[-1, :4]
+			else:
+				diff = torch.zeros(0, 12).cuda()
 
-			t.pos = t.pos + prediction
+			padding = torch.zeros(self.motion_cfg['network_args']['input_length'] - diff.shape[0], 12).cuda()
+			padded = torch.cat([padding, diff], dim=0)
+			current_cmc = torch.zeros(1, 1, 12)
+			current_cmc[:, :, 4:10] = last_warps[-1]
+
+			prediction = self.motion_network.predict(padded.unsqueeze(0), current_cmc, 1)
+			prediction = prediction[0, 0, :4] * self.data_std + self.data_mean
+
+			t.pos = clip_boxes_to_image(t.pos + prediction, blob['img'].shape[-2:])
 
 	def step(self, blob):
 		"""This function should be called every timestep to perform tracking with a blob
@@ -247,6 +282,11 @@ class Tracker:
 		for t in self.tracks:
 			# add current position to last_pos list
 			t.last_pos.append(t.pos.clone())
+
+		if self.motion_cfg['use_cam_features']:
+			self.calculate_cmc(blob)
+		else:
+			self.last_warps.append(torch.zeros(2, 3).cuda())
 
 		###########################
 		# Look for new detections #
@@ -291,7 +331,7 @@ class Tracker:
 
 			# apply motion model
 			if self.motion_model_enabled:
-				self.motion()
+				self.motion(blob)
 				self.tracks = [t for t in self.tracks if t.has_positive_area()]
 
 			# regress

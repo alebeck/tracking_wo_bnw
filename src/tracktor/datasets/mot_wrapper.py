@@ -16,11 +16,14 @@ class MOT17_Wrapper(Dataset):
 		"""
 		train_sequences = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-09', 'MOT17-10', 'MOT17-11', 'MOT17-13']
 		test_sequences = ['MOT17-01', 'MOT17-03', 'MOT17-06', 'MOT17-07', 'MOT17-08', 'MOT17-12', 'MOT17-14']
+		val_sequences = ['MOT17-09', 'MOT17-13']
 
 		if "train" == split:
 			sequences = train_sequences
 		elif "test" == split:
 			sequences = test_sequences
+		elif "val" == split:
+			sequences = val_sequences
 		elif "all" == split:
 			sequences = train_sequences + test_sequences
 		elif f"MOT17-{split}" in train_sequences + test_sequences:

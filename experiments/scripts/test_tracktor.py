@@ -5,27 +5,23 @@ from os import path as osp
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-
 import motmetrics as mm
-mm.lap.default_solver = 'lap'
-
-import torchvision
 import yaml
 from tqdm import tqdm
 import sacred
 from sacred import Experiment
+
 from tracktor.frcnn_fpn import FRCNN_FPN
 from tracktor.config import get_output_dir
 from tracktor.datasets.factory import Datasets
 from tracktor.oracle_tracker import OracleTracker
-from tracktor.resnet import resnet50
 from tracktor.motion import Seq2Seq
 from tracktor.tracker import Tracker
 from tracktor.reid.resnet import resnet50
 from tracktor.utils import interpolate, plot_sequence, get_mot_accum, evaluate_mot_accums
 
+mm.lap.default_solver = 'lap'
 ex = Experiment()
-
 ex.add_config('experiments/cfgs/tracktor.yaml')
 
 # hacky workaround to load the corresponding configs and not having to hardcode paths here
@@ -34,7 +30,7 @@ ex.add_named_config('oracle', 'experiments/cfgs/oracle_tracktor.yaml')
 
 
 @ex.automain
-def main(tracktor, reid, _config, _log, _run):
+def main(tracktor, siamese, _config, _log, _run):
     sacred.commands.print_config(_run)
 
     # set all seeds
@@ -62,11 +58,11 @@ def main(tracktor, reid, _config, _log, _run):
     obj_detect_state_dict = torch.load(_config['tracktor']['obj_detect_model'])
     obj_detect.load_state_dict(obj_detect_state_dict)
 
-    obj_detect.eval()
+    obj_detect.eval() 
     obj_detect.cuda()
 
     # reid
-    reid_network = resnet50(pretrained=False, **reid['cnn'])
+    reid_network = resnet50(pretrained=False, **siamese['cnn'])
     reid_network.load_state_dict(torch.load(tracktor['reid_weights']))
     reid_network.eval()
     reid_network.cuda()
@@ -80,7 +76,7 @@ def main(tracktor, reid, _config, _log, _run):
     if 'oracle' in tracktor:
         tracker = OracleTracker(obj_detect, reid_network, tracktor['tracker'], tracktor['oracle'])
     else:
-        tracker = Tracker(obj_detect, reid_network, motion_network, tracktor['tracker'], tracktor['motion'])
+        tracker = Tracker(obj_detect, reid_network, motion_network, tracktor['tracker'], tracktor['motion'], 7)
 
     time_total = 0
     num_frames = 0
@@ -115,6 +111,10 @@ def main(tracktor, reid, _config, _log, _run):
 
         _log.info(f"Writing predictions to: {output_dir}")
         seq.write_results(results, output_dir)
+
+        #if tracktor['write_cmc']:
+        #    _log.info(f"Writing cmc warps to: {output_dir}")
+        #    seq.write_cmc(tracker.last_warps, output_dir)
 
         if tracktor['write_images']:
             plot_sequence(results, seq, osp.join(output_dir, tracktor['dataset'], str(seq)))

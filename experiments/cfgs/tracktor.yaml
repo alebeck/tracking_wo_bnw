@@ -23,16 +23,17 @@ tracktor:
   # motion model parameters
   motion:
     network_args:
-      input_size: 6
-      hidden_size: 48
-      output_size: 6
-      input_length: 40
-      n_layers: 2
+      input_size: 9
+      hidden_size: 64
+      output_size: 9
+      input_length: 5
+      n_layers: 1
       dropout: 0.
 
-    network_weights: output/motion/checkpoint_17.pt
-    data_mean: [-0.0901, -0.1213,  0.0529,  0.3032]
-    data_std: [4.1137, 2.1125, 3.9754, 2.4975]
+    network_weights: output/motion/checkpoint_16.pt
+    data_mean: [0., 0., 0., 0.] #[-0.0901, -0.1213,  0.0529,  0.3032]
+    data_std: [1., 1., 1., 1.] #[4.1137, 2.1125, 3.9754, 2.4975]
+    use_cam_features: False
 
   interpolate: False
   # compile video with: `ffmpeg -f image2 -framerate 15 -i %06d.jpg -vcodec libx264 -y movie.mp4 -vf scale=320:-1`
@@ -42,6 +43,8 @@ tracktor:
   dataset_args: {}
   # [start percentage, end percentage], e.g., [0.0, 0.5] for train and [0.75, 1.0] for val split.
   frame_split: [0.0, 1.0]
+
+  write_cmc: True
 
   tracker:
     # FRCNN score threshold for detections

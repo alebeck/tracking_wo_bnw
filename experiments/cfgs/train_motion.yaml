@@ -1,0 +1,52 @@
+train:
+  datasets:
+    train:
+      data_path: /usr/stud/beckera/data/gt
+      cam_path: /usr/stud/beckera/data/cmc
+      sequences: [MOT17-02, MOT17-04, MOT17-05, MOT17-10, MOT17-11]
+      episode_length: 7
+      min_length: 7
+      offset: 1
+      target_length: 1
+      data_mean: [0, 0, 0, 0]
+      data_std: [1, 1, 1, 1]
+      max_noise: 0.
+      augment_target: false
+      flip: 0.
+      cam_noise: 0.
+      include_cam_features: false
+    val:
+      data_path: /usr/stud/beckera/data/gt
+      cam_path: /usr/stud/beckera/data/cmc
+      sequences: [MOT17-09, MOT17-13]
+      episode_length: 7
+      min_length: 7
+      offset: 1
+      target_length: 1
+      data_mean: [0, 0, 0, 0]
+      data_std: [1, 1, 1, 1]
+      include_cam_features: false
+
+  model:
+    input_size: 12
+    hidden_size: 64
+    output_size: 12
+    input_length: 5
+    n_layers: 1
+    dropout: 0.
+
+  batch_size: 32
+  epochs: 50
+  save_every: false
+  num_workers: 2
+  lr: 0.0001
+  patience: 15
+  data_mean: [0, 0, 0, 0]
+  data_std: [1, 1, 1, 1]
+  shuffle: true
+  teacher_forcing: 0.2
+  loss: mse
+  lmbda: 0.0025
+  tracktor_val_dataset: mot17_val_FRCNN17
+  tracktor_val_every: 5
+  tracktor_val_metrics: ['mota', 'idf1']
