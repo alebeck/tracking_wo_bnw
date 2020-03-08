@@ -7,9 +7,9 @@ from collections import defaultdict
 from os import path as osp
 
 import numpy as np
+import pandas as pd
 import torch
 from cycler import cycler as cy
-
 import cv2
 import matplotlib
 import matplotlib.pyplot as plt
@@ -301,36 +301,37 @@ def clip_boxes(boxes, im_shape):
 
 
 def get_center(pos):
-    x1 = pos[0, 0]
-    y1 = pos[0, 1]
-    x2 = pos[0, 2]
-    y2 = pos[0, 3]
-    return torch.Tensor([(x2 + x1) / 2, (y2 + y1) / 2]).cuda()
+    x1 = pos[:, 0]
+    y1 = pos[:, 1]
+    x2 = pos[:, 2]
+    y2 = pos[:, 3]
+    return torch.stack([(x2 + x1) / 2, (y2 + y1) / 2], dim=1)
 
 
 def get_width(pos):
-    return pos[0, 2] - pos[0, 0]
+    return pos[:, 2] - pos[:, 0]
 
 
 def get_height(pos):
-    return pos[0, 3] - pos[0, 1]
+    return pos[:, 3] - pos[:, 1]
 
 
 def make_pos(cx, cy, width, height):
-    return torch.Tensor([[
+    return torch.stack([
         cx - width / 2,
         cy - height / 2,
         cx + width / 2,
         cy + height / 2
-    ]]).cuda()
+    ], dim=1)
 
 
 def warp_pos(pos, warp_matrix):
-    p1 = torch.Tensor([pos[0, 0], pos[0, 1], 1]).view(3, 1)
-    p2 = torch.Tensor([pos[0, 2], pos[0, 3], 1]).view(3, 1)
+    warp_matrix = warp_matrix.to(pos.device)
+    p1 = torch.Tensor([pos[0, 0], pos[0, 1], 1]).view(3, 1).to(pos.device)
+    p2 = torch.Tensor([pos[0, 2], pos[0, 3], 1]).view(3, 1).to(pos.device)
     p1_n = torch.mm(warp_matrix, p1).view(1, 2)
     p2_n = torch.mm(warp_matrix, p2).view(1, 2)
-    return torch.cat((p1_n, p2_n), 1).view(1, -1).cuda()
+    return torch.cat((p1_n, p2_n), 1).view(1, -1)
 
 
 def get_mot_accum(results, seq):
@@ -401,3 +402,52 @@ def evaluate_mot_accums(accums, names, generate_overall=False, return_summary=Fa
 
     if return_summary:
         return summary
+
+
+def areasum(a, b):
+    return (a[:, 2] - a[:,0]) * (a[:, 3] - a[:,1]) + (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:,1])
+
+
+def intersection(a, b):
+    x = torch.max(a[:, 0], b[:, 0])
+    y = torch.max(a[:, 1], b[:, 1])
+    w = torch.min(a[:, 2], b[:, 2]) - x
+    h = torch.min(a[:, 3], b[:, 3]) - y
+    return torch.max(w, torch.tensor(0.).to(w.device)) * torch.max(h, torch.tensor(0.).to(w.device))
+
+
+def jaccard(ex_box, gt_box):
+    ex_box, gt_box = ex_box.view(-1, 4), gt_box.view(-1, 4)
+    insec = intersection(ex_box, gt_box)
+    uni = areasum(ex_box, gt_box) - insec
+    return insec.float() / uni
+
+
+def evaluate_classes(boxes_before, boxes, boxes_pred):
+    assert boxes_before.shape == boxes.shape == boxes_pred.shape
+    assert boxes.shape[1] == 4
+
+    classes_iou = jaccard(boxes_before, boxes)
+
+    # class name -> idc mapping
+    classes = {
+        '[1, 0.75)': classes_iou > 0.75,
+        '[0.75, 0.5)': (classes_iou <= 0.75) & (classes_iou > 0.5),
+        '[0.5, 0.25)': (classes_iou <= 0.5) & (classes_iou > 0.25),
+        '[0.25, 0)': (classes_iou <= 0.25) & (classes_iou > 0),
+        '0': classes_iou == 0,
+        'all': classes_iou >= 0
+    }
+
+    distribution = {cls: (idc.sum().float() / boxes.shape[0]).item() for cls, idc in classes.items()}
+    iou_true = {cls: jaccard(boxes[idc], boxes_pred[idc]).mean().item() for cls, idc in classes.items()}
+    iou_before = {cls: jaccard(boxes_before[idc], boxes_pred[idc]).mean().item() for cls, idc in classes.items()}
+    iou_before_true = {cls: jaccard(boxes_before[idc], boxes[idc]).mean().item() for cls, idc in classes.items()}
+
+    df = pd.DataFrame(
+        [distribution, iou_true, iou_before, iou_before_true],
+        ['share', 'IoU(true, pred)', 'IoU(before, pred)', 'IoU(before, true)']
+    )
+
+    return {'distrib': distribution, 'iou_true': iou_true,
+            'iou_before': iou_before, 'iou_before_true': iou_before_true, 'df': df}

@@ -15,7 +15,7 @@ from tracktor.frcnn_fpn import FRCNN_FPN
 from tracktor.config import get_output_dir
 from tracktor.datasets.factory import Datasets
 from tracktor.oracle_tracker import OracleTracker
-from tracktor.motion import Seq2Seq
+from tracktor.motion import Seq2Seq, CorrelationSeq2Seq
 from tracktor.tracker import Tracker
 from tracktor.reid.resnet import resnet50
 from tracktor.utils import interpolate, plot_sequence, get_mot_accum, evaluate_mot_accums
@@ -27,10 +27,13 @@ ex.add_config('experiments/cfgs/tracktor.yaml')
 # hacky workaround to load the corresponding configs and not having to hardcode paths here
 ex.add_config(ex.configurations[0]._conf['tracktor']['reid_config'])
 ex.add_named_config('oracle', 'experiments/cfgs/oracle_tracktor.yaml')
+ex.add_named_config('correlation_model', 'experiments/cfgs/correlation_model.yaml')
+ex.add_named_config('pos_model', 'experiments/cfgs/pos_model.yaml')
+ex.add_named_config('cva_model', 'experiments/cfgs/cva_model.yaml')
 
 
 @ex.automain
-def main(tracktor, siamese, _config, _log, _run):
+def main(tracktor, reid, _config, _log, _run):
     sacred.commands.print_config(_run)
 
     # set all seeds
@@ -62,21 +65,23 @@ def main(tracktor, siamese, _config, _log, _run):
     obj_detect.cuda()
 
     # reid
-    reid_network = resnet50(pretrained=False, **siamese['cnn'])
+    reid_network = resnet50(pretrained=False, **reid['cnn'])
     reid_network.load_state_dict(torch.load(tracktor['reid_weights']))
     reid_network.eval()
     reid_network.cuda()
 
     # motion network
-    motion_network = Seq2Seq(**tracktor['motion']['network_args'])
-    motion_network.load_state_dict(torch.load(tracktor['motion']['network_weights'])['model'])
-    motion_network.eval().cuda()
+    motion_network = None
+    if tracktor['tracker']['motion_model_enabled'] and not tracktor['motion']['use_cva_model']:
+        motion_network = eval(tracktor['motion']['model'])(**tracktor['motion']['model_args'])
+        motion_network.load_state_dict(torch.load(tracktor['motion']['network_weights'])['model'])
+        motion_network.eval().cuda()
 
     # tracktor
     if 'oracle' in tracktor:
         tracker = OracleTracker(obj_detect, reid_network, tracktor['tracker'], tracktor['oracle'])
     else:
-        tracker = Tracker(obj_detect, reid_network, motion_network, tracktor['tracker'], tracktor['motion'], 7)
+        tracker = Tracker(obj_detect, reid_network, motion_network, tracktor['tracker'], tracktor['motion'], 2)
 
     time_total = 0
     num_frames = 0
@@ -92,7 +97,8 @@ def main(tracktor, siamese, _config, _log, _run):
         data_loader = DataLoader(seq, batch_size=1, shuffle=False)
         for i, frame in enumerate(tqdm(data_loader)):
             if len(seq) * tracktor['frame_split'][0] <= i <= len(seq) * tracktor['frame_split'][1]:
-                tracker.step(frame)
+                with torch.no_grad():
+                    tracker.step(frame)
                 num_frames += 1
         results = tracker.get_results()
 
@@ -111,10 +117,6 @@ def main(tracktor, siamese, _config, _log, _run):
 
         _log.info(f"Writing predictions to: {output_dir}")
         seq.write_results(results, output_dir)
-
-        #if tracktor['write_cmc']:
-        #    _log.info(f"Writing cmc warps to: {output_dir}")
-        #    seq.write_cmc(tracker.last_warps, output_dir)
 
         if tracktor['write_images']:
             plot_sequence(results, seq, osp.join(output_dir, tracktor['dataset'], str(seq)))

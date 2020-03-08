@@ -1,5 +1,6 @@
 train:
-  datasets:
+  dataset: EpisodeDataset
+  dataset_args:
     train:
       data_path: /usr/stud/beckera/data/gt
       cam_path: /usr/stud/beckera/data/cmc
@@ -13,8 +14,9 @@ train:
       max_noise: 0.
       augment_target: false
       flip: 0.
-      cam_noise: 0.
       include_cam_features: false
+      cam_features_1_only: false
+      cam_noise: [0., 0., 0., 0., 0., 0.]
     val:
       data_path: /usr/stud/beckera/data/gt
       cam_path: /usr/stud/beckera/data/cmc
@@ -26,14 +28,7 @@ train:
       data_mean: [0, 0, 0, 0]
       data_std: [1, 1, 1, 1]
       include_cam_features: false
-
-  model:
-    input_size: 12
-    hidden_size: 64
-    output_size: 12
-    input_length: 5
-    n_layers: 1
-    dropout: 0.
+      cam_features_1_only: false
 
   batch_size: 32
   epochs: 50
@@ -50,3 +45,19 @@ train:
   tracktor_val_dataset: mot17_val_FRCNN17
   tracktor_val_every: 5
   tracktor_val_metrics: ['mota', 'idf1']
+
+tracktor:
+  motion:
+    model: Seq2Seq
+    model_args:
+      input_size: 12
+      hidden_size: 64
+      output_size: 12
+      input_length: 5
+      n_layers: 1
+      dropout: 0.
+      cmc_only_len_1: false
+    data_mean: [0., 0., 0., 0.] #[-0.0901, -0.1213,  0.0529,  0.3032]
+    data_std: [1., 1., 1., 1.] #[4.1137, 2.1125, 3.9754, 2.4975]
+    use_cam_features: false
+    use_pos_model: true

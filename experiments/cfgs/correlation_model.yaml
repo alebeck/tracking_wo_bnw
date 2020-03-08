@@ -1,0 +1,30 @@
+tracktor:
+
+  motion:
+    model: CorrelationSeq2Seq
+    model_args:
+      correlation_args:
+        kernel_size: 1
+        patch_size: 11
+        stride: 1
+        padding: 0
+        dilation_patch: 2
+      batch_norm: false
+      conv_channels: 128
+      n_box_channels: 32
+      roi_output_size: 1
+      avg_box_features: false
+      hidden_size: 128
+      input_length: 5
+      n_layers: 2
+      dropout: 0.
+      correlation_only: false
+      use_env_features: false
+      use_height_feature: false
+
+    network_weights: output/motion/l1/3star_epoch33.pt
+    feature_level: 2
+    data_mean: [0., 0., 0., 0.] #[-0.0901, -0.1213,  0.0529,  0.3032]
+    data_std: [1., 1., 1., 1.] #[4.1137, 2.1125, 3.9754, 2.4975]
+    use_cam_features: false
+    use_correlation_model: true

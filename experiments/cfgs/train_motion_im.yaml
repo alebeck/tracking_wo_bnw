@@ -1,0 +1,88 @@
+train:
+  dataset: EpisodeImageDataset
+  dataset_args:
+    train:
+      data_path: /usr/stud/beckera/tracking_wo_bnw/data/MOT17Det
+      image_features_path: /usr/stud/beckera/tracking_wo_bnw/data/features-2
+      sequences: [MOT17-02, MOT17-04, MOT17-05, MOT17-10, MOT17-11]
+      episode_length: 7
+      min_length: 2
+      offset: 1
+      target_length: 1
+      vis_threshold: 0.25
+      skip_prob: 0.
+      max_noise: 0.
+      augment_target: false
+      skip_n_min: 0
+      skip_n_max: 0
+      fix_skip_n_per_ep: true
+      cam_motion_prob: 0.
+      cam_motion_all_seqs: false
+      flip_prob: 0.
+      flipped_features_path: null
+    val:
+      data_path: /usr/stud/beckera/tracking_wo_bnw/data/MOT17Det
+      image_features_path: /usr/stud/beckera/tracking_wo_bnw/data/features-2
+      sequences: [MOT17-09, MOT17-13]
+      episode_length: 7
+      min_length: 2
+      offset: 1
+      target_length: 1
+      vis_threshold: 0.25
+
+  #rcnn_transform_args:
+  #  min_size: 400 #800
+  #  max_size: 667 #1333
+  #  image_mean: [0.485, 0.456, 0.406]
+  #  image_std: [0.229, 0.224, 0.225]
+
+  batch_size: 8
+  epochs: 50
+  save_every: true
+  num_workers: 2
+  lr: 0.0001
+  weight_decay: 0.0
+  patience: 15
+  data_mean: [0, 0, 0, 0]
+  data_std: [1, 1, 1, 1]
+  shuffle: true
+  teacher_forcing: 0.2
+  loss: mse
+  lmbda: 0.0025
+  tracktor_val_dataset: mot17_val_FRCNN17
+  tracktor_train_dataset: mot17_smallTrain_FRCNN17
+  tracktor_val_every: 3
+  tracktor_val_metrics: ['mota', 'idf1']
+  resume: null
+  resume_optimizer: True
+  pin_memory: True
+
+tracktor:
+  motion:
+    model: CorrelationSeq2Seq
+    model_args:
+      correlation_args:
+        kernel_size: 1
+        patch_size: 11
+        stride: 1
+        padding: 0
+        dilation_patch: 2
+      batch_norm: false
+      conv_channels: 128
+      n_box_channels: 32
+      roi_output_size: 1
+      avg_box_features: false
+      hidden_size: 128
+      input_length: 5
+      n_layers: 2
+      dropout: 0.
+      correlation_only: false
+      use_env_features: false
+      fixed_env: false
+      use_height_feature: false
+
+    feature_level: 2
+    data_mean: [0., 0., 0., 0.] #[-0.0901, -0.1213,  0.0529,  0.3032]
+    data_std: [1., 1., 1., 1.] #[4.1137, 2.1125, 3.9754, 2.4975]
+    use_cam_features: false
+    use_correlation_model: true

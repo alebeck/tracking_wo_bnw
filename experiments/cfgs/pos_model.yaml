@@ -1,0 +1,17 @@
+tracktor:
+
+  # motion model parameters
+  motion:
+    model: Seq2Seq
+    model_args:
+      input_size: 12
+      hidden_size: 64
+      output_size: 12
+      input_length: 5
+      n_layers: 1
+      dropout: 0.
+
+    network_weights: output/motion/cam/checkpoint_45.pt
+    data_mean: [0., 0., 0., 0.] #[-0.0901, -0.1213,  0.0529,  0.3032]
+    data_std: [1., 1., 1., 1.] #[4.1137, 2.1125, 3.9754, 2.4975]
+    use_cam_features: False
