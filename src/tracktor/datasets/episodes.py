@@ -422,6 +422,8 @@ class EpisodeImageDataset(Dataset):
 
         # these will be resized in the collate function to allow for later RoI pooling
         boxes_all = data[:, :4]
+        # we don't need target positions for RoI
+        boxes_all[-self.target_length:] = 0.
 
         return boxes_in, boxes_target, boxes_all, image_features, original_image_sizes, image_sizes, length, feat_translation
 
