@@ -1,11 +1,15 @@
 from pathlib import Path
 import pickle
+import sys
 
 import numpy as np
 
 
-LOAD_PATH = Path(f'output/ipca_128.pkl')
-OUTPUT_PATH = Path(f'data/features-128-fp16')
+assert len(sys.argv) == 4
+
+PCA_PATH = Path(sys.argv[1])
+INPUT_PATH = Path(sys.argv[2])
+OUTPUT_PATH = Path(sys.argv[3])
 STEP_SIZE = 50
 TYPE = 'float16'
 
@@ -22,11 +26,11 @@ SEQS = [
 
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-with LOAD_PATH.open('rb') as fh:
+with PCA_PATH.open('rb') as fh:
     ipca = pickle.load(fh)
 
 for seq in SEQS:
-    f = np.load(f'data/features/{seq}-features.npy', mmap_mode='r')
+    f = np.load(INPUT_PATH / f'{seq}-features.npy', mmap_mode='r')
     out = []
 
     idx = 0

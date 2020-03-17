@@ -17,11 +17,11 @@ MAX_SIZE = 1333
 IMAGE_MEAN = [0.485, 0.456, 0.406]
 IMAGE_STD = [0.229, 0.224, 0.225]
 DATA_PATH = Path("/usr/stud/beckera/tracking_wo_bnw/data/MOT17Det")
-WEIGHTS_PATH = "output/faster_rcnn_fpn_training_mot_17/model_epoch_27.model"
-OUTPUT_PATH = Path('data/features-fp16-flip')
+WEIGHTS_PATH = "/usr/stud/beckera/tracking_wo_bnw/output/faster_rcnn_fpn_training_mot_17/model_epoch_27.model"
+OUTPUT_PATH = Path('/storage/user/beckera/data/images-fp16')
 SEQUENCES = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-09', 'MOT17-10', 'MOT17-11', 'MOT17-13']
-FEATURE_LEVEL = 1
-DO_FLIP = True
+FEATURE_LEVEL = -1
+DO_FLIP = False
 FP16 = True
 
 rcnn_transform: GeneralizedRCNNTransform = GeneralizedRCNNTransform(MIN_SIZE, MAX_SIZE, IMAGE_MEAN, IMAGE_STD)
@@ -30,9 +30,10 @@ if DO_FLIP:
 else:
     transform = ToTensor()
 
-obj_detect: nn.Module = FRCNN_FPN(num_classes=2)
-obj_detect.load_state_dict(torch.load(WEIGHTS_PATH))
-obj_detect.eval().cuda()
+if FEATURE_LEVEL != -1:
+    obj_detect: nn.Module = FRCNN_FPN(num_classes=2)
+    obj_detect.load_state_dict(torch.load(WEIGHTS_PATH))
+    obj_detect.eval().cuda()
 
 
 # inspired by torchvision.models.detection.transform.GeneralizedRCNNTransform
@@ -97,7 +98,11 @@ for seq in SEQUENCES:
             img, _ = rcnn_transform.resize(img, None)
             image_sizes.append(img.shape[-2:])
             img = batch_images([img], max_size)[0]
-            features = obj_detect.backbone(img.cuda().unsqueeze(0))[FEATURE_LEVEL].detach().cpu()
+            if FEATURE_LEVEL == -1:
+                # use plain image as features
+                features = img.unsqueeze(0)
+            else:
+                features = obj_detect.backbone(img.cuda().unsqueeze(0))[FEATURE_LEVEL].detach().cpu()
             feature_maps.append(features.half() if FP16 else features)
 
     feature_maps = torch.cat(feature_maps)
