@@ -365,7 +365,11 @@ class Tracker:
                 transformed = transformed.reshape(*features.shape[:-1], -1).transpose(0, 3, 1, 2)
                 self.last_features.append(torch.from_numpy(transformed).cuda())
             else:
-                self.last_features.append(self.obj_detect.features[self.motion_cfg['feature_level']])
+                if self.motion_cfg['model'] == 'FRCNNSeq2Seq':
+                    # save whole image as feature
+                    self.last_features.append(self.obj_detect.preprocessed_images.tensors)
+                else:
+                    self.last_features.append(self.obj_detect.features[self.motion_cfg['feature_level']])
 
         if self.public_detections:
             dets = blob['dets'].squeeze(dim=0)

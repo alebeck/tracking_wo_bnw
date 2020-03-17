@@ -7,6 +7,7 @@ from torchvision.ops import MultiScaleRoIAlign
 
 from .utils import conv, correlate, flatten
 from tracktor.utils import get_height, get_width
+from tracktor.frcnn_fpn import FRCNN_FPN
 
 
 class Seq2Seq(nn.Module):
@@ -113,7 +114,8 @@ class CorrelationSeq2Seq(nn.Module):
             correlation_only,
             use_env_features,
             fixed_env,
-            use_height_feature
+            use_height_feature,
+            correlation_last_only
     ):
         super().__init__()
 
@@ -132,6 +134,7 @@ class CorrelationSeq2Seq(nn.Module):
         self.use_env_features = use_env_features
         self.fixed_env = fixed_env
         self.use_height_feature = use_height_feature
+        self.correlation_last_only = correlation_last_only
 
         locations_per_box = 1 if self.avg_box_features else roi_output_size ** 2
         multiplier = 2 if self.use_env_features else 1
@@ -220,7 +223,7 @@ class CorrelationSeq2Seq(nn.Module):
         target_idc = (torch.cumsum(corr_lengths, dim=0) - 1).tolist()
         in_idc = list(set(range(len(out_correlation))).difference(set(target_idc)))
         box_features_start = F if not self.use_height_feature else F + 1
-        if len(in_idc) > 0:
+        if len(in_idc) > 0 and not self.correlation_last_only:
             #encoder_in[mask][:, F:] = box_features[in_idc].view(len(in_idc), -1)
             t_tmp = encoder_in[mask]
             t_tmp[:, box_features_start:] = box_features[in_idc].view(len(in_idc), -1)
@@ -289,3 +292,57 @@ class CorrelationSeq2Seq(nn.Module):
             decoder_in = out
 
         return torch.cat(out_seq, dim=1)
+
+
+class FRCNNSeq2Seq(CorrelationSeq2Seq):
+
+    def __init__(
+            self,
+            obj_detect_weights,
+            correlation_args,
+            batch_norm,
+            conv_channels,
+            n_box_channels,
+            roi_output_size,
+            avg_box_features,
+            hidden_size,
+            input_length,
+            n_layers,
+            dropout,
+            correlation_only,
+            use_env_features,
+            fixed_env,
+            use_height_feature,
+            correlation_last_only,
+            feature_level=1
+    ):
+        super().__init__(
+            correlation_args,
+            batch_norm,
+            conv_channels,
+            n_box_channels,
+            roi_output_size,
+            avg_box_features,
+            hidden_size,
+            input_length,
+            n_layers,
+            dropout,
+            correlation_only,
+            use_env_features,
+            fixed_env,
+            use_height_feature,
+            correlation_last_only
+        )
+        self.feature_level = feature_level
+        self.frcnn: nn.Module = FRCNN_FPN(num_classes=2)
+        self.frcnn.load_state_dict(torch.load(obj_detect_weights))
+
+    def forward(self, diffs, boxes_target, boxes_resized, image_features, image_sizes, lengths, teacher_forcing=False):
+        # feed images through object detector
+        image_features = self.frcnn.backbone(image_features)[self.feature_level]
+        # delegate remaining tasks to super class
+        return super().forward(diffs, boxes_target, boxes_resized, image_features, image_sizes, lengths, teacher_forcing)
+
+    def predict(self, diffs, boxes_resized, image_features, image_sizes, lengths, output_length):
+        image_features = self.frcnn.backbone(image_features)[self.feature_level]
+        return super().predict(diffs, boxes_resized, image_features, image_sizes, lengths, output_length)
