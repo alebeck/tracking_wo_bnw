@@ -4,13 +4,14 @@ from configparser import ConfigParser
 
 
 if __name__ == "__main__":
-    data_dir = "data/MOT17_LOW_FPS"
-    labels_dir = "/storage/slurm/meinhard/data/MOT17Labels/train/"
-    imgs_dir = "/storage/slurm/meinhard/data/MOT17Det/train/"
+    data_dir = "/usr/stud/beckera/tracking_wo_bnw/data/MOT17_LOW_FPS"
+    labels_dir = "/usr/stud/beckera/tracking_wo_bnw/data/MOT17Labels/train/"
+    imgs_dir = "/usr/stud/beckera/tracking_wo_bnw/data/MOT17Det/train/"
 
     frame_skips = [1, 2, 3, 5, 6, 10, 15, 30]
 
-    train_sequences = ["MOT17-02-FRCNN", "MOT17-04-FRCNN", "MOT17-09-FRCNN", "MOT17-10-FRCNN", "MOT17-11-FRCNN"]
+    #train_sequences = ["MOT17-02-FRCNN", "MOT17-04-FRCNN", "MOT17-09-FRCNN", "MOT17-10-FRCNN", "MOT17-11-FRCNN"]
+    train_sequences = ["MOT17-04-FRCNN"]
 
     if os.path.exists(data_dir):
         shutil.rmtree(data_dir)
@@ -38,7 +39,7 @@ if __name__ == "__main__":
 
             f = open(det_file_path, 'r')
             linelist = f.readlines()
-            f.close
+            f.close()
 
             f2 = open(new_det_file_path, 'w')
             for line in linelist:
@@ -52,14 +53,17 @@ if __name__ == "__main__":
             f2.close()
 
             #GT
-            os.makedirs(os.path.join(dataset_seq_dir, 'gt'))
+            dataset_seq_dir_img = os.path.join(train_dataset_dir, s.replace('-FRCNN', ''))
+            os.makedirs(dataset_seq_dir_img)
+
+            os.makedirs(os.path.join(dataset_seq_dir_img, 'gt'))
 
             gt_file_path = os.path.join(labels_dir, s, 'gt/gt.txt')
-            new_gt_file_path = os.path.join(dataset_seq_dir, 'gt/gt.txt')
+            new_gt_file_path = os.path.join(dataset_seq_dir_img, 'gt/gt.txt')
 
             f = open(gt_file_path, 'r')
             linelist = f.readlines()
-            f.close
+            f.close()
 
             f2 = open(new_gt_file_path, 'w')
             for line in linelist:
@@ -73,8 +77,6 @@ if __name__ == "__main__":
             f2.close()
 
             #IMG
-            dataset_seq_dir_img = os.path.join(train_dataset_dir, s.replace('-FRCNN', ''))
-            os.makedirs(dataset_seq_dir_img)
             os.makedirs(os.path.join(dataset_seq_dir_img, 'img1'))
 
             img_dir = os.path.join(imgs_dir, s.replace('-FRCNN', ''), 'img1')

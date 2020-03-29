@@ -135,7 +135,9 @@ def plot_sequence(tracks, db, output_dir):
                         t_i[2] - t_i[0],
                         t_i[3] - t_i[1],
                         fill=False,
-                        linewidth=1.0, **styles[j]
+                        linewidth=1.0,
+                        linestyle='--' if (len(t_i) > 5 and t_i[5] == 1) else '-',  # dash hallucinations
+                        **styles[j]
                     ))
 
                 ax.annotate(j, (t_i[0] + (t_i[2] - t_i[0]) / 2.0, t_i[1] + (t_i[3] - t_i[1]) / 2.0),

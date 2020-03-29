@@ -8,14 +8,14 @@ import torch.cuda
 import torch.backends.cudnn
 from torch import nn
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR
 import yaml
 from tqdm import tqdm
 import sacred
 from sacred import Experiment
 from torch_trainer import TorchTrainer, TrainingConfig, context
 
-from tracktor.motion import CorrelationSeq2Seq
+from tracktor.motion import CorrelationSeq2Seq, FRCNNSeq2Seq
 from tracktor.frcnn_fpn import FRCNN_FPN
 from tracktor.reid.resnet import resnet50
 from tracktor.tracker import Tracker
@@ -32,7 +32,12 @@ class Trainer(TorchTrainer):
         self.validate_tracktor = validate_tracktor
         self.mse = nn.MSELoss(reduction='none')
         self.optim = torch.optim.Adam(context.model.parameters(), lr=context.cfg.lr, weight_decay=context.cfg.weight_decay)
-        self.sched = ReduceLROnPlateau(self.optim, patience=context.cfg.patience, verbose=True)
+        if context.cfg.scheduler_type == 'plateau':
+            self.sched = ReduceLROnPlateau(self.optim, verbose=True, **context.cfg.scheduler_args)
+        elif context.cfg.scheduler_type == 'multistep':
+            self.sched = MultiStepLR(self.optim, **context.cfg.scheduler_args)
+        else:
+            raise ValueError(f'Unknown scheduler: {context.cfg.scheduler_type}')
 
     def criterion(self, input, target, last_pos=None):
         input = input.view(-1, 4)
@@ -191,7 +196,12 @@ class Trainer(TorchTrainer):
             miou_epoch = ((iou > 0.7).sum().float() / len(iou))
             with open(context.log_path / f'{context.epoch}_df_val.txt', 'w') as fh:
                 fh.write(eval_df.to_string())
-            self.sched.step(loss_epoch, context.epoch)
+
+            if context.cfg.scheduler_type == 'plateau':
+                self.sched.step(loss_epoch, epoch=context.epoch)
+            elif context.cfg.scheduler_type == 'multistep':
+                self.sched.step(epoch=context.epoch)
+
         else:
             loss_epoch = torch.tensor(loss_epoch).mean()
             iou_epoch = torch.cat(iou_epoch).mean()
@@ -278,6 +288,7 @@ def main(tracktor, reid, train, _config, _log, _run):
     assert train['dataset_args']['train']['episode_length'] == train['dataset_args']['val']['episode_length']
     assert train['dataset_args']['train']['offset'] == train['dataset_args']['val']['offset']
     assert train['loss'] in ['mse', 'wmse', 'iou']
+    assert 'patience' not in train, 'Configure patience via scheduler_args'
 
     config = TrainingConfig(
         data=[eval(train['dataset'])] * 2,
@@ -292,8 +303,9 @@ def main(tracktor, reid, train, _config, _log, _run):
         save_every=train['save_every'],
         num_workers=train['num_workers'],
         lr=train['lr'],
+        scheduler_type=train['scheduler_type'],
+        scheduler_args=train['scheduler_args'],
         weight_decay=train['weight_decay'],
-        patience=train['patience'],
         data_mean=train['data_mean'],
         data_std=train['data_std'],
         shuffle=train['shuffle'],

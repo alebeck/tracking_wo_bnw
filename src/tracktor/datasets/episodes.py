@@ -204,6 +204,8 @@ class EpisodeImageDataset(Dataset):
             fix_skip_n_per_ep=True,
             cam_motion_prob=0.,
             cam_motion_all_seqs=False,
+            cam_motion_all_frames=False,
+            cam_motion_cont_prob=0.,
             flip_prob=0.,
             flipped_features_path=None,
             jitter=False,
@@ -226,6 +228,8 @@ class EpisodeImageDataset(Dataset):
         self.fix_skip_n_per_ep = fix_skip_n_per_ep
         self.cam_motion_prob = cam_motion_prob
         self.cam_motion_all_seqs = cam_motion_all_seqs
+        self.cam_motion_all_frames = cam_motion_all_frames
+        self.cam_motion_cont_prob = cam_motion_cont_prob
         self.flip_prob = flip_prob
         self.flipped_features_path = Path(flipped_features_path) if flipped_features_path else None
         self.jitter = jitter
@@ -339,15 +343,37 @@ class EpisodeImageDataset(Dataset):
             allowed_seqs = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-10', 'MOT17-11']
         else:
             allowed_seqs = ['MOT17-02', 'MOT17-04']
+
         if torch.rand(()) < self.cam_motion_prob and seq in allowed_seqs and data[0, 3] - data[0, 1] < 125:
+            if self.cam_motion_all_frames:
+                w = data[0, 2] - data[0, 0]
+                h = data[0, 3] - data[0, 1]
+                dx_cam = torch.FloatTensor(data.shape[0]).uniform_(-w, w)
+                dy_cam = torch.FloatTensor(data.shape[0]).uniform_(-(2 * h) / 3, (2 * h) / 3)
+                # apply delta to all positions starting from idx
+                data[:, :4] += torch.stack([dx_cam, dy_cam, dx_cam, dy_cam], dim=1)
+                feat_translation[:, :] = torch.stack([dx_cam, dy_cam], dim=1)
+            else:
+                idx_cam = torch.randint(1, data.shape[0], ())
+                w = data[idx_cam, 2] - data[idx_cam, 0]
+                h = data[idx_cam, 3] - data[idx_cam, 1]
+                dx_cam = torch.FloatTensor(1).uniform_(-w, w)
+                dy_cam = torch.FloatTensor(1).uniform_(-(2 * h) / 3, (2 * h) / 3)
+                # apply delta to all positions starting from idx
+                data[idx_cam:, :4] += torch.tensor([dx_cam, dy_cam, dx_cam, dy_cam])
+                feat_translation[idx_cam:, :] = torch.tensor([dx_cam, dy_cam])
+
+        # independently from above cam motion injection, inject continuous cam motion
+        if torch.rand(()) < self.cam_motion_cont_prob and seq in allowed_seqs and data[0, 3] - data[0, 1] < 125:
+            # inject linear motion, starting at a random position
             idx_cam = torch.randint(1, data.shape[0], ())
             w = data[idx_cam, 2] - data[idx_cam, 0]
             h = data[idx_cam, 3] - data[idx_cam, 1]
             dx_cam = torch.FloatTensor(1).uniform_(-w, w)
-            dy_cam = torch.FloatTensor(1).uniform_(-(2 * h) / 3, (2 * h) / 3)
-            # apply delta to all positions starting from idx
-            data[idx_cam:, :4] += torch.tensor([dx_cam, dy_cam, dx_cam, dy_cam])
-            feat_translation[idx_cam:, :] = torch.tensor([dx_cam, dy_cam])
+            dy_cam = torch.FloatTensor(1).uniform_(-(h / 3), h / 3)
+            # continously apply delta to all positions starting from idx
+            data[idx_cam:, :4] += torch.tensor([dx_cam, dy_cam, dx_cam, dy_cam]).repeat(data[idx_cam:].shape[0], 1).cumsum(0)
+            feat_translation[idx_cam:, :] += torch.tensor([dx_cam, dy_cam]).repeat(data[idx_cam:].shape[0], 1).cumsum(0)
 
         # frames indices start at 1, saved features indices start at 0, so subtract 1
         frames = np.array([self.track_frames[ep_index][i] for i in data_idc]) - 1
@@ -363,31 +389,6 @@ class EpisodeImageDataset(Dataset):
             if not self.augment_target:
                 noise[-self.target_length:] = 0.
             data[:, :4] += noise
-
-        # jittering from paper
-        elif self.jitter:
-            widths = get_width(data)
-            heights = get_height(data)
-            centers = get_center(data)
-
-            # uniform in [-0.15, 0.15]
-            rel_noise = -0.16 * torch.rand(data.shape[0], 2) + 0.08
-            noise = rel_noise * torch.stack([widths, heights], dim=1)
-            if not self.augment_target:
-                noise[-self.target_length:] = 0.
-            new_centers = centers + noise
-
-            rel_noise = -0.16 * torch.rand(data.shape[0]) + 1.08
-            if not self.augment_target:
-                rel_noise[-self.target_length:] = 1.
-            new_widths = widths * rel_noise
-
-            rel_noise = -0.16 * torch.rand(data.shape[0]) + 1.08
-            if not self.augment_target:
-                rel_noise[-self.target_length:] = 1.
-            new_heights = heights * rel_noise
-
-            data[:, :4] = make_pos(new_centers[:, 0], new_centers[:, 1], new_widths, new_heights)
 
         if self.flip_prob > 0.0 and torch.rand(()) < self.flip_prob:
             # horizontally flip positions
@@ -412,7 +413,12 @@ class EpisodeImageDataset(Dataset):
         #     image_features = torch.from_numpy(self.image_features[seq][frames]).float()
 
         # split to input and target
-        boxes_in, boxes_target = data[:-self.target_length], data[-self.target_length:]
+        # resize these to 1080 x 1920
+        boxes_in, boxes_target = data[:-self.target_length].clone(), data[-self.target_length:].clone()
+        scales = torch.tensor([1080, 1920]) / torch.tensor(original_image_sizes[0]).float()
+        scale = scales.min()
+        boxes_in[:, :4] = boxes_in[:, :4] * scale
+        boxes_target[:, :4] = boxes_target[:, :4] * scale
 
         # padding
         input_length = self.episode_length - self.target_length
@@ -421,7 +427,7 @@ class EpisodeImageDataset(Dataset):
             boxes_in = torch.cat([pad, boxes_in])
 
         # these will be resized in the collate function to allow for later RoI pooling
-        boxes_all = data[:, :4]
+        boxes_all = data[:, :4].clone()
         # we don't need target positions for RoI
         boxes_all[-self.target_length:] = 0.
 

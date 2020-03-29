@@ -346,3 +346,57 @@ class FRCNNSeq2Seq(CorrelationSeq2Seq):
     def predict(self, diffs, boxes_resized, image_features, image_sizes, lengths, output_length):
         image_features = self.frcnn.backbone(image_features)[self.feature_level]
         return super().predict(diffs, boxes_resized, image_features, image_sizes, lengths, output_length)
+
+
+class ImageCorrelationModel(CorrelationSeq2Seq):
+
+    def __init__(
+            self,
+            obj_detect_weights,
+            correlation_args,
+            batch_norm,
+            conv_channels,
+            n_box_channels,
+            roi_output_size,
+            avg_box_features,
+            hidden_size,
+            input_length,
+            n_layers,
+            dropout,
+            correlation_only,
+            use_env_features,
+            fixed_env,
+            use_height_feature,
+            correlation_last_only,
+            feature_level=1
+    ):
+        super().__init__(
+            correlation_args,
+            batch_norm,
+            conv_channels,
+            n_box_channels,
+            roi_output_size,
+            avg_box_features,
+            hidden_size,
+            input_length,
+            n_layers,
+            dropout,
+            correlation_only,
+            use_env_features,
+            fixed_env,
+            use_height_feature,
+            correlation_last_only
+        )
+        self.feature_level = feature_level
+        self.frcnn: nn.Module = FRCNN_FPN(num_classes=2)
+        self.frcnn.load_state_dict(torch.load(obj_detect_weights))
+
+    def forward(self, diffs, boxes_target, boxes_resized, image_features, image_sizes, lengths, teacher_forcing=False):
+        # feed images through object detector
+        image_features = self.frcnn.backbone(image_features)[self.feature_level]
+        # delegate remaining tasks to super class
+        return super().forward(diffs, boxes_target, boxes_resized, image_features, image_sizes, lengths, teacher_forcing)
+
+    def predict(self, diffs, boxes_resized, image_features, image_sizes, lengths, output_length):
+        image_features = self.frcnn.backbone(image_features)[self.feature_level]
+        return super().predict(diffs, boxes_resized, image_features, image_sizes, lengths, output_length)

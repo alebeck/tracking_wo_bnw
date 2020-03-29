@@ -21,8 +21,9 @@ tracktor:
       correlation_only: false
       use_env_features: false
       use_height_feature: false
+      correlation_last_only: false
 
-    network_weights: output/motion/l1/3star_epoch33.pt
+    network_weights: null
     feature_level: 2
     data_mean: [0., 0., 0., 0.] #[-0.0901, -0.1213,  0.0529,  0.3032]
     data_std: [1., 1., 1., 1.] #[4.1137, 2.1125, 3.9754, 2.4975]

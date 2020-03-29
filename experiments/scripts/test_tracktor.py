@@ -110,13 +110,20 @@ def main(tracktor, reid, _config, _log, _run):
         if tracktor['interpolate']:
             results = interpolate(results)
 
+        # if not tracktor['write_hallucinations']:
+        #     # remove hallucinations from results
+        #     for track in results.values():
+        #         for frame in track:
+        #             if track[frame][5] == 1:
+        #                 del track[frame]
+
         if seq.no_gt:
             _log.info(f"No GT data for evaluation available.")
         else:
             mot_accums.append(get_mot_accum(results, seq))
 
         _log.info(f"Writing predictions to: {output_dir}")
-        seq.write_results(results, output_dir)
+        seq.write_results(results, output_dir, tracktor['write_hallucinations'])
 
         if tracktor['write_images']:
             plot_sequence(results, seq, osp.join(output_dir, tracktor['dataset'], str(seq)))

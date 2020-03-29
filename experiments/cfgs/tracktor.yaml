@@ -28,8 +28,8 @@ tracktor:
   dataset_args: {}
   # [start percentage, end percentage], e.g., [0.0, 0.5] for train and [0.75, 1.0] for val split.
   frame_split: [0.0, 1.0]
-
-  write_cmc: True
+  # should we include hallucinated parts in results?
+  write_hallucinations: false
 
   motion:
     use_cam_features: false
@@ -41,6 +41,8 @@ tracktor:
     data_std: [1., 1., 1., 1.]
     model_args:
       input_length: 5
+    hallucinate: false
+    hallucinate_cva_only: false
 
   tracker:
     # FRCNN score threshold for detections
@@ -60,6 +62,7 @@ tracktor:
     max_features_num: 10
     # Do camera motion compensation
     do_align: True
+    align_inactive_only: False
     # Which warp mode to use (cv2.MOTION_EUCLIDEAN, cv2.MOTION_AFFINE, ...)
     warp_mode: cv2.MOTION_EUCLIDEAN
     # maximal number of iterations (original 50)

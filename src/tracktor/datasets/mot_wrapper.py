@@ -89,7 +89,7 @@ class MOT19CVPR_Wrapper(MOT17_Wrapper):
 class MOT17LOWFPS_Wrapper(MOT17_Wrapper):
 	"""A Wrapper for the MOT_Sequence class to return multiple sequences."""
 
-	def __init__(self, split, dataloader):
+	def __init__(self, split, **dataloader):
 		"""Initliazes all subset of the dataset.
 
 		Keyword arguments:
@@ -97,7 +97,8 @@ class MOT17LOWFPS_Wrapper(MOT17_Wrapper):
 		dataloader -- args for the MOT_Sequence dataloader
 		"""
 
-		sequences = ['MOT17-02', 'MOT17-04', 'MOT17-09', 'MOT17-10', 'MOT17-11']
+		#sequences = ['MOT17-02', 'MOT17-04', 'MOT17-09', 'MOT17-10', 'MOT17-11']
+		sequences = ['MOT17-04']
 
 		self._data = []
 		for s in sequences:
