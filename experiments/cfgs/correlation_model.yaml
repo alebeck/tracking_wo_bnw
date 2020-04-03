@@ -22,6 +22,7 @@ tracktor:
       use_env_features: false
       use_height_feature: false
       correlation_last_only: false
+      use_attention: true
 
     network_weights: null
     feature_level: 2

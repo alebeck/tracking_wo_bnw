@@ -1,4 +1,4 @@
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 import torch
 from torch import nn
@@ -115,7 +115,9 @@ class CorrelationSeq2Seq(nn.Module):
             use_env_features,
             fixed_env,
             use_height_feature,
-            correlation_last_only
+            correlation_last_only,
+            use_attention,
+            sum_lstm_layers
     ):
         super().__init__()
 
@@ -135,6 +137,12 @@ class CorrelationSeq2Seq(nn.Module):
         self.fixed_env = fixed_env
         self.use_height_feature = use_height_feature
         self.correlation_last_only = correlation_last_only
+        self.use_attention = use_attention
+        self.sum_lstm_layers = sum_lstm_layers
+
+        self.cont_tracks = set()
+        self.encoder_states = {}
+        self.encoder_outs = defaultdict(list)
 
         locations_per_box = 1 if self.avg_box_features else roi_output_size ** 2
         multiplier = 2 if self.use_env_features else 1
@@ -160,12 +168,20 @@ class CorrelationSeq2Seq(nn.Module):
                                dropout=dropout)
         self.attn = nn.Linear(self.hidden_size + self.input_size, self.input_length)
         self.attn_combine = nn.Linear(self.hidden_size + self.output_size, self.hidden_size)
-        self.decoder = nn.LSTM(self.input_size + self.hidden_size, self.hidden_size, batch_first=True,
-                               num_layers=n_layers, dropout=dropout)
-        self.linear1 = nn.Linear(self.hidden_size, self.hidden_size)
+        self.decoder = nn.LSTM(
+            self.input_size + self.hidden_size if self.use_attention else self.input_size,
+            self.hidden_size,
+            batch_first=True,
+            num_layers=n_layers,
+            dropout=dropout
+        )
+        self.linear1 = nn.Linear(
+            self.hidden_size if self.sum_lstm_layers else self.hidden_size * self.n_layers,
+            self.hidden_size
+        )
         self.linear2 = nn.Linear(self.hidden_size, self.output_size)
 
-    def prepare_decoder(self, diffs, boxes_resized, image_features, image_sizes, lengths):
+    def prepare_decoder(self, diffs, boxes_resized, image_features, image_sizes, lengths, track_id=None):
         B, L, F = diffs.shape
 
         bounds = (torch.cumsum(lengths, dim=0) - 1).tolist()
@@ -210,29 +226,48 @@ class CorrelationSeq2Seq(nn.Module):
         if self.avg_box_features:
             box_features = box_features.view(*box_features.shape[:2], -1).mean(2).unsqueeze(2)
 
-        # construct encoder input
-        encoder_in = torch.zeros(B, L, self.input_size).cuda()
-        encoder_in[:, :, :F] = diffs
-
         corr_lengths = lengths - 1
-        mask = torch.zeros(encoder_in.shape[:2], dtype=torch.bool)
-        for i, l in enumerate(corr_lengths):
-            if l - 1 > 0:
-                mask[i, -(l - 1):] = True
-
         target_idc = (torch.cumsum(corr_lengths, dim=0) - 1).tolist()
         in_idc = list(set(range(len(out_correlation))).difference(set(target_idc)))
         box_features_start = F if not self.use_height_feature else F + 1
-        if len(in_idc) > 0 and not self.correlation_last_only:
-            #encoder_in[mask][:, F:] = box_features[in_idc].view(len(in_idc), -1)
-            t_tmp = encoder_in[mask]
-            t_tmp[:, box_features_start:] = box_features[in_idc].view(len(in_idc), -1)
-            if self.use_height_feature:
-                t_tmp[:, F] = boxes_resized[keep_first][:, 3] - boxes_resized[keep_first][:, 1]
-            encoder_in[mask] = t_tmp
 
-        # feed features into encoder, retrieve hidden states
-        encoder_out = self.encoder(encoder_in)  # encoder_out[0]: 32, 60, 48
+        if track_id is None or track_id not in self.cont_tracks:
+            encoder_in = torch.zeros(B, L, self.input_size).cuda()
+            encoder_in[:, :, :F] = diffs
+
+            mask = torch.zeros(encoder_in.shape[:2], dtype=torch.bool)
+            for i, l in enumerate(corr_lengths):
+                if l - 1 > 0:
+                    mask[i, -(l - 1):] = True
+
+            if len(in_idc) > 0 and not self.correlation_last_only:
+                #encoder_in[mask][:, F:] = box_features[in_idc].view(len(in_idc), -1)
+                t_tmp = encoder_in[mask]
+                t_tmp[:, box_features_start:] = box_features[in_idc].view(len(in_idc), -1)
+                if self.use_height_feature:
+                    t_tmp[:, F] = boxes_resized[keep_first][:, 3] - boxes_resized[keep_first][:, 1]
+                encoder_in[mask] = t_tmp
+
+            # feed features into encoder, retrieve hidden states
+            encoder_out = self.encoder(encoder_in)  # encoder_out[0]: 32, 60, 48
+
+            if track_id is not None and len(lengths) == 1 and lengths[0] == 7:
+                # save encoder state and last outs
+                for i in range(encoder_out[0].shape[1]):
+                    self.encoder_outs[track_id].append(encoder_out[0][:, [i]])
+                self.encoder_states[track_id] = (encoder_out[1][0], encoder_out[1][1])
+                self.cont_tracks.add(track_id)
+        else:
+            assert not self.use_height_feature
+            encoder_in = torch.zeros(1, 1, self.input_size).cuda()
+            encoder_in[:, :, :F] = diffs[:, -1:]
+            if len(in_idc) > 0:
+                encoder_in[:, :, F:] = box_features[in_idc[-1]].view(1, 1, -1)
+            # one encoder step
+            encoder_out = self.encoder(encoder_in, self.encoder_states[track_id])
+            self.encoder_states[track_id] = (encoder_out[1][0], encoder_out[1][1])
+            self.encoder_outs[track_id].append(encoder_out[0])
+
         decoder_h = encoder_out[1][0]
         decoder_c = torch.zeros(self.n_layers, B, self.hidden_size).cuda()
 
@@ -243,6 +278,9 @@ class CorrelationSeq2Seq(nn.Module):
         if self.use_height_feature:
             decoder_in[:, 0, F] = boxes_resized[torch.tensor(bounds) - 1][:, 3] - boxes_resized[torch.tensor(bounds) - 1][:, 1]
 
+        # set encoder_out to shape [1, 5, 128]
+        if track_id in self.cont_tracks:
+            encoder_out = (torch.cat(self.encoder_outs[track_id][-5:], dim=1),)
         return encoder_out, decoder_in, decoder_h, decoder_c
 
     def forward(self, diffs, boxes_target, boxes_resized, image_features, image_sizes, lengths, teacher_forcing=False):
@@ -251,47 +289,60 @@ class CorrelationSeq2Seq(nn.Module):
         out_seq = []
 
         for i in range(boxes_target.shape[1]):
-            attn_weights = f.softmax(
-                self.attn(torch.cat([last_h[0], decoder_in.squeeze(1)], dim=1)), dim=1)  # 32, 60
-            attn_applied = torch.bmm(attn_weights.unsqueeze(1), encoder_out[0])  # 32, 1, 48
-            decoder_in = torch.cat([decoder_in, attn_applied], dim=2)  # 32, 1, 54
+            if self.use_attention:
+                attn_weights = f.softmax(
+                    self.attn(torch.cat([last_h[0], decoder_in.squeeze(1)], dim=1)), dim=1)  # 32, 60
+                attn_applied = torch.bmm(attn_weights.unsqueeze(1), encoder_out[0])  # 32, 1, 48
+                decoder_in = torch.cat([decoder_in, attn_applied], dim=2)  # 32, 1, 54
 
             _, (last_h, last_c) = self.decoder(decoder_in, (last_h, last_c))
-            out = self.linear2(f.relu(self.linear1(last_h.sum(dim=0))))  # [1,12]
+            if self.sum_lstm_layers:
+                out = self.linear2(f.relu(self.linear1(last_h.sum(dim=0))))  # [1,12]
+            else:
+                out = self.linear2(f.relu(self.linear1(last_h.permute(1, 0, 2).reshape(last_h.shape[1], -1))))
+
             out = out.unsqueeze(1)  # add sequence dimension
             out_seq.append(out)
 
             assert boxes_target.shape[1] == 1
 
-        # apply linear0, detach necessary?, add image features
-        # if teacher_forcing:
-        # 	decoder_in = boxes_target[:, i, :].unsqueeze(1)
-        # else:
-        # 	decoder_in = out.detach()
+            # apply linear0, detach necessary?, add image features
+            # if teacher_forcing:
+            # 	decoder_in = boxes_target[:, i, :].unsqueeze(1)
+            # else:
+            # 	decoder_in = out.detach()
 
         return torch.cat(out_seq, dim=1)
 
-    def predict(self, diffs, boxes_resized, image_features, image_sizes, lengths, output_length):
+    def predict(self, diffs, boxes_resized, image_features, image_sizes, lengths, output_length, track_id=None):
         assert output_length == 1
 
         encoder_out, decoder_in, last_h, last_c = \
-            self.prepare_decoder(diffs, boxes_resized, image_features, image_sizes, lengths)
+            self.prepare_decoder(diffs, boxes_resized, image_features, image_sizes, lengths, track_id)
         out_seq = []
 
         for i in range(output_length):
-            attn_weights = f.softmax(
-                self.attn(torch.cat([last_h[0], decoder_in.squeeze(1)], dim=1)), dim=1)  # 32, 60
-            attn_applied = torch.bmm(attn_weights.unsqueeze(1), encoder_out[0])  # 32, 1, 48
-            decoder_in = torch.cat([decoder_in, attn_applied], dim=2)  # 32, 1, 54
+            if self.use_attention:
+                attn_weights = f.softmax(self.attn(torch.cat([last_h[0], decoder_in.squeeze(1)], dim=1)), dim=1)  # 32, 60
+                attn_applied = torch.bmm(attn_weights.unsqueeze(1), encoder_out[0])  # 32, 1, 48
+                decoder_in = torch.cat([decoder_in, attn_applied], dim=2)  # 32, 1, 54
 
             _, (last_h, last_c) = self.decoder(decoder_in, (last_h, last_c))
-            out = self.linear2(f.relu(self.linear1(last_h.sum(dim=0))))
+            if self.sum_lstm_layers:
+                out = self.linear2(f.relu(self.linear1(last_h.sum(dim=0))))
+            else:
+                out = self.linear2(f.relu(self.linear1(last_h.permute(1, 0, 2).reshape(last_h.shape[1], -1))))
             out = out.unsqueeze(1)  # add sequence dimension
             out_seq.append(out)
 
             decoder_in = out
 
         return torch.cat(out_seq, dim=1)
+
+    def reset_encoder_states(self):
+        self.cont_tracks = set()
+        self.encoder_states = {}
+        self.encoder_outs = defaultdict(list)
 
 
 class FRCNNSeq2Seq(CorrelationSeq2Seq):

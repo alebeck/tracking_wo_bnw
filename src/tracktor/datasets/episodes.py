@@ -206,6 +206,7 @@ class EpisodeImageDataset(Dataset):
             cam_motion_all_seqs=False,
             cam_motion_all_frames=False,
             cam_motion_cont_prob=0.,
+            cam_motion_large=False,
             flip_prob=0.,
             flipped_features_path=None,
             jitter=False,
@@ -230,6 +231,7 @@ class EpisodeImageDataset(Dataset):
         self.cam_motion_all_seqs = cam_motion_all_seqs
         self.cam_motion_all_frames = cam_motion_all_frames
         self.cam_motion_cont_prob = cam_motion_cont_prob
+        self.cam_motion_large = cam_motion_large
         self.flip_prob = flip_prob
         self.flipped_features_path = Path(flipped_features_path) if flipped_features_path else None
         self.jitter = jitter
@@ -340,9 +342,9 @@ class EpisodeImageDataset(Dataset):
         feat_translation = torch.zeros(data.shape[0], 2)
 
         if self.cam_motion_all_seqs:
-            allowed_seqs = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-10', 'MOT17-11']
+            allowed_seqs = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-10', 'MOT17-11', 'MOT17-13']
         else:
-            allowed_seqs = ['MOT17-02', 'MOT17-04']
+            allowed_seqs = ['MOT17-02', 'MOT17-04', 'MOT17-13']
 
         if torch.rand(()) < self.cam_motion_prob and seq in allowed_seqs and data[0, 3] - data[0, 1] < 125:
             if self.cam_motion_all_frames:
@@ -357,8 +359,12 @@ class EpisodeImageDataset(Dataset):
                 idx_cam = torch.randint(1, data.shape[0], ())
                 w = data[idx_cam, 2] - data[idx_cam, 0]
                 h = data[idx_cam, 3] - data[idx_cam, 1]
-                dx_cam = torch.FloatTensor(1).uniform_(-w, w)
-                dy_cam = torch.FloatTensor(1).uniform_(-(2 * h) / 3, (2 * h) / 3)
+                if self.cam_motion_large:
+                    dx_cam = torch.FloatTensor(1).uniform_(-1.5*w, 1.5*w)
+                    dy_cam = torch.FloatTensor(1).uniform_(-(2 * h) / 3, (2 * h) / 3)
+                else:
+                    dx_cam = torch.FloatTensor(1).uniform_(-w, w)
+                    dy_cam = torch.FloatTensor(1).uniform_(-(2 * h) / 3, (2 * h) / 3)
                 # apply delta to all positions starting from idx
                 data[idx_cam:, :4] += torch.tensor([dx_cam, dy_cam, dx_cam, dy_cam])
                 feat_translation[idx_cam:, :] = torch.tensor([dx_cam, dy_cam])

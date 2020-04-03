@@ -181,7 +181,7 @@ class MOT17_Sequence(Dataset):
                 m = m.tolist()
                 writer.writerow([frame + 1, m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2]])
 
-    def write_results(self, all_tracks, output_dir, write_hallucinations=False):
+    def write_results(self, all_tracks, output_dir):
         """Write the tracks in the format for MOT16/MOT17 sumbission
         all_tracks: dictionary with 1 dictionary for every track with {..., i:np.array([x1,y1,x2,y2]), ...} at key track_num
         Each file contains these lines:
@@ -220,10 +220,6 @@ class MOT17_Sequence(Dataset):
             writer = csv.writer(of, delimiter=',')
             for i, track in all_tracks.items():
                 for frame, bb in track.items():
-                    if not write_hallucinations and len(bb) > 5 and bb[5] == 1:
-                        # this bb is a hallucination and we don't want to write it to results
-                        continue
-
                     x1 = bb[0]
                     y1 = bb[1]
                     x2 = bb[2]

@@ -110,6 +110,9 @@ def main(tracktor, reid, _config, _log, _run):
         if tracktor['interpolate']:
             results = interpolate(results)
 
+        if tracktor['write_images']:
+            plot_sequence(results, seq, osp.join(output_dir, tracktor['dataset'], str(seq)))
+
         # if not tracktor['write_hallucinations']:
         #     # remove hallucinations from results
         #     for track in results.values():
@@ -123,10 +126,7 @@ def main(tracktor, reid, _config, _log, _run):
             mot_accums.append(get_mot_accum(results, seq))
 
         _log.info(f"Writing predictions to: {output_dir}")
-        seq.write_results(results, output_dir, tracktor['write_hallucinations'])
-
-        if tracktor['write_images']:
-            plot_sequence(results, seq, osp.join(output_dir, tracktor['dataset'], str(seq)))
+        seq.write_results(results, output_dir)
 
     _log.info(f"Tracking runtime for all sequences (without evaluation or image writing): "
               f"{time_total:.1f} s ({num_frames / time_total:.1f} Hz)")
