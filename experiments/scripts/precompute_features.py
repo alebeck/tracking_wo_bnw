@@ -18,9 +18,9 @@ IMAGE_MEAN = [0.485, 0.456, 0.406]
 IMAGE_STD = [0.229, 0.224, 0.225]
 DATA_PATH = Path("/usr/stud/beckera/tracking_wo_bnw/data/MOT17Det")
 WEIGHTS_PATH = "/usr/stud/beckera/tracking_wo_bnw/output/faster_rcnn_fpn_training_mot_17/model_epoch_27.model"
-OUTPUT_PATH = Path('/storage/user/beckera/data/images-fp16')
+OUTPUT_PATH = Path('/storage/user/beckera/data/features-3-fp16')
 SEQUENCES = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-09', 'MOT17-10', 'MOT17-11', 'MOT17-13']
-FEATURE_LEVEL = -1
+FEATURE_LEVEL = 3
 DO_FLIP = False
 FP16 = True
 

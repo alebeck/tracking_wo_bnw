@@ -10,6 +10,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import yaml
+from torchvision.models.detection._utils import BoxCoder
 from tqdm import tqdm
 import sacred
 from sacred import Experiment
@@ -34,34 +35,26 @@ class Trainer(TorchTrainer):
         self.optim = torch.optim.Adam(context.model.parameters(), lr=context.cfg.lr)
         self.sched = ReduceLROnPlateau(self.optim, patience=context.cfg.patience, verbose=True)
 
-        self.random_model = context.cfg.model(**context.cfg.model_args)
-        self.random_model.load_state_dict(context.model.state_dict())
-        self.random_model.cuda()
+        if context.cfg.use_box_coding:
+            self.use_box_coding = True
+            self.box_coder = BoxCoder(context.cfg.box_coding_weights)
+        else:
+            self.use_box_coding = False
 
     def criterion(self, input, target):
         input = input.view(-1, 4)
         target = target.view(-1, 4)
+        assert context.cfg.loss == 'mse'
+        return self.mse(input, target).mean()
 
-        if context.cfg.loss == 'iou':
-            mask = intersection(input, target) > 0
-            if (mask == 0).sum():
-                # non-overlapping boxes
-                loss = self.mse(input[~mask], target[~mask]).mean() * context.cfg.lmbda
-            else:
-                loss = torch.tensor(0.).cuda()
-            loss += (jaccard(input[mask], target[mask]) * -1).mean()
-
-        elif context.cfg.loss == 'mse':
-            loss = self.mse(input, target).mean()
-
-        else:
-            raise ValueError()
-
+    def criterion_coded(self, prediction, x, target, last_coded):
+        target_coded = self.box_coder.encode(list(target[:, :, :4]), list(x[:, [-1], :4]))
+        last_coded = last_coded[:, [-1], :4]
+        loss = self.criterion(prediction[:, :, :4], torch.stack(target_coded) - last_coded)
         return loss
 
     def epoch(self):
         loss_epoch = []
-        loss_random_epoch = []
         loss_1_epoch = []
         loss_2_epoch = []
         loss_3_epoch = []
@@ -71,85 +64,83 @@ class Trainer(TorchTrainer):
         iou_epoch = []
         miou_epoch = []
 
+        all_x = []
+        all_out = []
         all_input = []
         all_gt = []
         all_pred_pos = []
-        all_pred_pos_random = []
         all_prev_pos = []
 
         for x, target, length in context.data_loader:
             x, target = x.cuda(), target.cuda()
 
-            _input = torch.zeros(x.shape[0], context.cfg.model_args['input_length'], 12).cuda()
-            _input[:, :, :4] = x[:, 1:, :4] - x[:, :-1, :4]  # raises error if model and dataset lengths do not match
-            _input[:, :, 4:10] = x[:, 1:, 4:10]
-            _input[:, :, 11] = 1.
-            _input[(x[:, :, 11] == 0.)[:, :-1]] = 0.
+            _input = torch.zeros(x.shape[0], context.cfg.model_args['input_length'], 6).cuda()
+            # _input[:, :, :4] = x[:, 1:, :4] - x[:, :-1, :4]  # raises error if model and dataset lengths do not match
+            # _input[:, :, 5] = 1.
+            # _input[(x[:, :, 5] == 0.)[:, :-1]] = 0.
+
+            if self.use_box_coding:
+                encoded = self.box_coder.encode(list(x[:, 1:, :4]), list(x[:, :-1, :4]))
+                _input[:, :, :4] = torch.stack(encoded, dim=0)
+            else:
+                # raises error if model and dataset lengths do not match
+                _input[:, :, :4] = x[:, 1:, :4] - x[:, :-1, :4]
+            _input[:, :, 5] = 1.
+            _input[(x[:, :, 5] == 0.)[:, :-1]] = 0.
 
             if not context.validate:
                 self.optim.zero_grad()
                 do_tf = context.cfg.teacher_forcing > 0 and np.random.uniform() < context.cfg.teacher_forcing
                 out = context.model(_input, target, do_tf)
-                with torch.no_grad():
-                    out_random = self.random_model(_input, target, do_tf)
             else:
                 out = context.model.predict(_input, target, target.shape[1])
-                with torch.no_grad():
-                    out_random = self.random_model(_input, target, target.shape[1])
 
             out[:, :, :4] = out[:, :, :4] * torch.tensor(context.cfg.data_std).cuda()[:4] + torch.tensor(
                 context.cfg.data_mean).cuda()[:4]
             assert out.shape[1] == 1
 
             last_input = x[:, -1, :].unsqueeze(1)
-            pred_pos = last_input[:, :, :4] + _input[:, [-1], :4] + out[:, :, :4]
-            pred_pos_random = last_input[:, :, :4] + _input[:, [-1], :4] + out_random[:, :, :4]
 
-            loss = self.criterion(pred_pos, target[:, :, :4])
+            if self.use_box_coding:
+                # out is the acceleration in encoding space
+                last_offset = _input[:, [-1], :4]
+                pred_offset = last_offset + out[:, :, :4]
+                pred_pos = self.box_coder.decode(list(pred_offset), list(last_input))
+            else:
+                pred_pos = last_input[:, :, :4] + _input[:, [-1], :4] + out[:, :, :4]
+
+            # calculate loss
+            if self.use_box_coding:
+                # target_coded = self.box_coder.encode(list(target[:, :, :4]), list(x[:, [-1], :4]))
+                last_coded = _input[:, [-1], :4]
+                # loss = self.criterion(out[:, :, :4], torch.stack(target_coded) - last_coded)
+                loss = self.criterion_coded(out, x, target, last_coded)
+            else:
+                loss = self.criterion(pred_pos, target[:, :, :4])
+
             loss_epoch.append(loss.detach().cpu())
-            loss_random = self.criterion(pred_pos_random, target[:, :, :4])
-            loss_random_epoch.append(loss_random.detach().cpu())
 
             # DIFFERENT LENGTH ANALYSIS
-            mask_1 = length == 1
-            loss_1 = self.criterion(pred_pos[mask_1], target[:, :, :4][mask_1])
-            if not (loss_1 != loss_1):
-                loss_1_epoch.append(loss_1.detach().cpu())
-
-            mask_2 = length == 2
-            loss_2 = self.criterion(pred_pos[mask_2], target[:, :, :4][mask_2])
-            if not (loss_2 != loss_2):
-                loss_2_epoch.append(loss_2.detach().cpu())
-
-            mask_3 = length == 3
-            loss_3 = self.criterion(pred_pos[mask_3], target[:, :, :4][mask_3])
-            if not (loss_3 != loss_3):
-                loss_3_epoch.append(loss_3.detach().cpu())
-
-            mask_4 = length == 4
-            loss_4 = self.criterion(pred_pos[mask_4], target[:, :, :4][mask_4])
-            if not (loss_4 != loss_4):
-                loss_4_epoch.append(loss_4.detach().cpu())
-
-            mask_5 = length == 5
-            loss_5 = self.criterion(pred_pos[mask_5], target[:, :, :4][mask_5])
-            if not (loss_5 != loss_5):
-                loss_5_epoch.append(loss_5.detach().cpu())
-
-            mask_6 = length == 6
-            loss_6 = self.criterion(pred_pos[mask_6], target[:, :, :4][mask_6])
-            if not (loss_6 != loss_6):
-                loss_6_epoch.append(loss_6.detach().cpu())
+            loss_lists = [loss_1_epoch, loss_2_epoch, loss_3_epoch, loss_4_epoch, loss_5_epoch, loss_6_epoch]
+            for i, loss_list in zip(range(1, 7), loss_lists):
+                mask = length == i
+                if mask.any():
+                    if self.use_box_coding:
+                        loss_part = self.criterion_coded(out[mask], x[mask], target[mask], _input[mask])
+                    else:
+                        loss_part = self.criterion(pred_pos[mask], target[:, :, :4][mask])
+                    loss_list.append(loss_part)
 
             if not context.validate and context.epoch > 0:
                 loss.backward()
                 # nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 self.optim.step()
 
-            all_input.append(x.detach().cpu())
+            all_x.append(x.detach().cpu())
+            all_out.append(out.detach().cpu())
+            all_input.append(_input.detach().cpu())
             all_gt.append(target[:, :, :4].detach().cpu())
             all_pred_pos.append(pred_pos.detach().cpu())
-            all_pred_pos_random.append(pred_pos_random.detach().cpu())
             all_prev_pos.append(torch.cat([
                 last_input[:, :, :4].detach().cpu(),
                 target[:, :-1, :4].detach().cpu()
@@ -161,31 +152,41 @@ class Trainer(TorchTrainer):
             iou_epoch.append(iou)
             miou_epoch.append((iou > 0.7).sum().float() / len(iou))
 
-        all_input = torch.cat(all_input)  # e.g [94920, 6, 12]
+        all_x = torch.cat(all_x)  # e.g [94920, 6, 12]
+        all_out = torch.cat(all_out)
+        all_input = torch.cat(all_input)
         all_gt = torch.cat(all_gt)
         all_pred_pos = torch.cat(all_pred_pos)
-        all_pred_pos_random = torch.cat(all_pred_pos_random)
         all_prev_pos = torch.cat(all_prev_pos)
 
         assert all_prev_pos.shape[1] == all_gt.shape[1] == all_pred_pos.shape[1] == 1
         eval_df = evaluate_classes(all_prev_pos.squeeze(1), all_gt.squeeze(1), all_pred_pos.squeeze(1))['df']
 
         # calculate cva performance for current epoch
-        diff = all_input[:, 1:, :4] - all_input[:, :-1, :4]
-        m = (all_input[:, :, 11] == 1.)[:, :-1].unsqueeze(1).float()
+        diff = all_x[:, 1:, :4] - all_x[:, :-1, :4]
+        m = (all_x[:, :, 5] == 1.)[:, :-1].unsqueeze(1).float()
         v_mean = torch.bmm(m, diff) / m.sum(dim=2).unsqueeze(2)
         # set NaNs to zero (https://discuss.pytorch.org/t/how-to-set-nan-in-tensor-to-0/3918/4)
         v_mean[v_mean != v_mean] = 0.
         v_mean = v_mean.squeeze(1)
 
-        pred_cva = all_input[:, -1, :4] + v_mean
+        pred_cva = all_x[:, -1, :4] + v_mean
+        val_mask = ((pred_cva[:, 2] - pred_cva[:, 0]) >= 0) & ((pred_cva[:, 3] - pred_cva[:, 1]) >= 0)
+
         iou_cva = jaccard(pred_cva, all_gt.squeeze(1)).mean()
         miou_cva = (jaccard(pred_cva, all_gt.squeeze(1)) > 0.7).sum().float() / len(pred_cva)
-        loss_cva = self.criterion(pred_cva, all_gt.squeeze(1))
+        if self.use_box_coding:
+            offset_cva = self.box_coder.encode(list(pred_cva[val_mask].unsqueeze(1)[:, :, :4]), list(all_x[val_mask][:, [-1], :4]))
+            coded_cva = torch.stack(offset_cva) - all_input[val_mask][:, [-1], :4]
+            loss_cva = self.criterion_coded(coded_cva, all_x[val_mask], all_gt[val_mask], all_input[val_mask])
+        else:
+            loss_cva = self.criterion(pred_cva, all_gt.squeeze(1))
 
         if context.validate:
-            loss_epoch = self.criterion(all_pred_pos.squeeze(1)[:, :4], all_gt.squeeze(1)).mean()
-            loss_random_epoch = self.criterion(all_pred_pos_random.squeeze(1)[:, :4], all_gt.squeeze(1)).mean()
+            if self.use_box_coding:
+                loss_epoch = self.criterion_coded(all_out, all_x, all_gt, all_input)
+            else:
+                loss_epoch = self.criterion(all_pred_pos.squeeze(1)[:, :4], all_gt.squeeze(1)).mean()
             iou = jaccard(all_pred_pos.squeeze(1)[:, :4], all_gt.squeeze(1))
             iou_epoch = iou.mean()
             miou_epoch = ((iou > 0.7).sum().float() / len(iou))
@@ -194,7 +195,6 @@ class Trainer(TorchTrainer):
             self.sched.step(loss_epoch, context.epoch)
         else:
             loss_epoch = torch.tensor(loss_epoch).mean()
-            loss_random_epoch = torch.tensor(loss_random_epoch).mean()
             iou_epoch = torch.cat(iou_epoch).mean()
             miou_epoch = torch.stack(miou_epoch).float().mean()
             with open(context.log_path / f'{context.epoch}_df_train.txt', 'w') as fh:
@@ -219,8 +219,7 @@ class Trainer(TorchTrainer):
             'loss_3': loss_3_epoch,
             'loss_4': loss_4_epoch,
             'loss_5': loss_5_epoch,
-            'loss_6': loss_6_epoch,
-            'loss_rand': loss_random_epoch
+            'loss_6': loss_6_epoch
         }
 
         if context.validate and context.epoch % context.cfg.tracktor_val_every == 0:
@@ -236,7 +235,7 @@ ex.add_config(ex.configurations[0]._conf['tracktor']['reid_config'])
 
 
 @ex.automain
-def main(tracktor, siamese, train, _config, _log, _run):
+def main(tracktor, reid, train, _config, _log, _run):
     # instantiate tracktor
     sacred.commands.print_config(_run)
 
@@ -262,7 +261,7 @@ def main(tracktor, siamese, train, _config, _log, _run):
     obj_detect.cuda()
 
     # reid
-    reid_network = resnet50(pretrained=False, **siamese['cnn'])
+    reid_network = resnet50(pretrained=False, **reid['cnn'])
     reid_network.load_state_dict(torch.load(tracktor['reid_weights']))
     reid_network.eval()
     reid_network.cuda()
@@ -300,7 +299,9 @@ def main(tracktor, siamese, train, _config, _log, _run):
         teacher_forcing=train['teacher_forcing'],
         loss=train['loss'],
         lmbda=train['lmbda'],
-        tracktor_val_every=train['tracktor_val_every']
+        tracktor_val_every=train['tracktor_val_every'],
+        use_box_coding=tracktor['motion']['use_box_coding'],
+        box_coding_weights=tracktor['motion']['box_coding_weights'],
     )
 
     def validate_tracktor(motion_network, epoch):

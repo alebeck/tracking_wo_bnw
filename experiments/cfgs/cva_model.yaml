@@ -8,3 +8,4 @@ tracktor:
       input_length: 5
     data_mean: [0., 0., 0., 0.]
     data_std: [1., 1., 1., 1.]
+    model_inactives: true

@@ -6,6 +6,8 @@ import torch
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 import cv2
+from torchvision.models.detection._utils import BoxCoder
+from torchvision.ops.poolers import LevelMapper
 
 from .utils import bbox_overlaps, warp_pos
 from torchvision.ops.boxes import clip_boxes_to_image, nms
@@ -46,6 +48,11 @@ class Tracker:
         self.number_of_iterations = tracker_cfg['number_of_iterations']
         self.termination_eps = tracker_cfg['termination_eps']
 
+        if self.motion_cfg['use_box_coding']:
+            self.box_coder = BoxCoder(self.motion_cfg['box_coding_weights'])
+
+        self.map_levels = LevelMapper(2.0, 5.0)
+
         self.tracks = []
         self.inactive_tracks = []
         self.track_num = 0
@@ -71,7 +78,10 @@ class Tracker:
         self.tracks = []
         self.inactive_tracks = []
         if self.motion_network is not None:
-            self.motion_network.reset_encoder_states()
+            try:
+                self.motion_network.reset_encoder_states()
+            except:
+                pass
 
         if hard:
             self.track_num = 0
@@ -302,41 +312,44 @@ class Tracker:
 
         for t in self.tracks:
             assert len(t.last_pos) > 0
+            last_pos = torch.cat(list(t.last_pos), dim=0)
 
             if len(t.last_pos) < self.min_length - 1:  # TODO account for target length != 1
                 # we have a sequence length that the model was not trained for, resort to CVA-5
                 if not len(t.last_pos) == 1:
-                    last_pos = torch.cat(list(t.last_pos), dim=0)
                     diff = last_pos[1:] - last_pos[:-1]
                     t.pos = clip_boxes_to_image(t.pos + diff[-5:, :4].mean(0), blob['img'].shape[-2:])
                 continue
 
-            # create cmc features
-            last_warps = torch.stack(self.last_warps[-len(t.last_pos):]).view(len(t.last_pos), 6)
-
             if len(t.last_pos) > 1:
-                last_pos = torch.cat(list(t.last_pos), dim=0)
-                diff = last_pos[1:] - last_pos[:-1]
-                diff = (diff - self.data_mean) / self.data_std  # normalization
-                if self.cam_features_1_only:
-                    diff = torch.cat([diff, torch.zeros(diff.shape[0], 8).cuda()], dim=1)
+                if self.motion_cfg['use_box_coding']:
+                    diff = self.box_coder.encode([last_pos[1:, :4]], [last_pos[:-1, :4]])[0]
+                    diff = torch.cat([diff, torch.zeros(diff.shape[0], 2).cuda()], dim=1)
+                    diff[:, 5] = 1  # not padding
                 else:
-                    diff = torch.cat([diff, last_warps[:-1], torch.zeros(diff.shape[0], 2).cuda()], dim=1)
-                diff[:, 11] = 1  # not padding
-                t.pos = t.pos + diff[-1, :4]
+                    diff = last_pos[1:] - last_pos[:-1]
+                    diff = torch.cat([diff, torch.zeros(diff.shape[0], 2).cuda()], dim=1)
+                    diff[:, 5] = 1  # not padding
+                    t.pos = clip_boxes_to_image(t.pos + diff[-1, :4], blob['img'].shape[-2:])
             else:
-                diff = torch.zeros(0, 12).cuda()
+                diff = torch.zeros(0, 6).cuda()
 
-            padding = torch.zeros(self.motion_cfg['model_args']['input_length'] - diff.shape[0], 12).cuda()
+            padding = torch.zeros(self.motion_cfg['model_args']['input_length'] - diff.shape[0], 6).cuda()
             padded = torch.cat([padding, diff], dim=0)
-            current_cmc = torch.zeros(1, 1, 12)
-            if len(t.last_pos) == 1 or not self.cam_features_1_only:
-                current_cmc[:, :, 4:10] = last_warps[-1]
+            #current_cmc = torch.zeros(1, 1, 12)
+            #if len(t.last_pos) == 1 or not self.cam_features_1_only:
+            #    current_cmc[:, :, 4:10] = last_warps[-1]
 
-            prediction = self.motion_network.predict(padded.unsqueeze(0), current_cmc, 1)
-            prediction = prediction[0, 0, :4] * self.data_std + self.data_mean
+            prediction = self.motion_network.predict(padded.unsqueeze(0), None, 1)
 
-            t.pos = clip_boxes_to_image(t.pos + prediction, blob['img'].shape[-2:])
+            if self.motion_cfg['use_box_coding']:
+                # prediction is the acceleration in encoding space
+                last_offset = padded[[-1], :4]
+                pred_offset = last_offset + prediction[0, 0, :4]
+                pred_pos = self.box_coder.decode([pred_offset], [last_pos[-1].unsqueeze(0)])
+                t.pos = clip_boxes_to_image(pred_pos[0], blob['img'].shape[-2:])
+            else:
+                t.pos = clip_boxes_to_image(t.pos + prediction[0, 0, :4], blob['img'].shape[-2:])
 
     def motion_cva(self, blob):
         for t in self.tracks:
@@ -359,19 +372,29 @@ class Tracker:
                 # we have a sequence length that the model was not trained for, resort to CVA-5
                 if not len(t.last_pos) == 1:
                     diff = last_pos[1:] - last_pos[:-1]
-                    t.last_v = diff[-5:, :4].mean(0)
-                    t.pos = clip_boxes_to_image(t.pos + t.last_v, blob['img'].shape[-2:])
+                    t.pos = clip_boxes_to_image(t.pos + diff[-5:, :4].mean(0), blob['img'].shape[-2:])
                 continue
 
             if len(t.last_pos) > 1:
-                diff = last_pos[1:] - last_pos[:-1]
-                diff = (diff - self.data_mean) / self.data_std  # normalization
-                diff = torch.cat([diff, torch.zeros(diff.shape[0], 2).cuda()], dim=1)
-                diff[:, 5] = 1  # not padding
-                t.last_v = diff[-1, :4]  # add last diff to last_v, acceleration will be added below
+                if self.motion_cfg['use_box_coding']:
+                    # [0] because batch size == 0
+                    diff = self.box_coder.encode([last_pos[1:, :4]], [last_pos[:-1, :4]])[0]
+                    diff = torch.cat([diff, torch.zeros(diff.shape[0], 2).cuda()], dim=1)
+                    diff[:, 5] = 1  # not padding
+                else:
+                    scales = torch.tensor([1080, 1920]) / torch.tensor(self.obj_detect.original_image_sizes[0]).float()
+                    scale = scales.min()
+
+                    diff = last_pos[1:] - last_pos[:-1]
+                    diff = torch.cat([diff, torch.zeros(diff.shape[0], 2).cuda()], dim=1)
+                    diff[:, 5] = 1  # not padding
+                    t.pos = clip_boxes_to_image(t.pos + diff[-1, :4], blob['img'].shape[-2:])
+
+                    diff[:, :4] = diff[:, :4] * scale
+                    #t.last_v = diff[-1, :4]  # add last diff to last_v, acceleration will be added below
             else:
                 diff = torch.zeros(0, 6).cuda()
-                t.last_v = torch.zeros(4).cuda()
+                #t.last_v = torch.zeros(4).cuda()
 
             padding = torch.zeros(self.motion_cfg['model_args']['input_length'] - diff.shape[0], 6).cuda()
             padded = torch.cat([padding, diff], dim=0)
@@ -382,22 +405,40 @@ class Tracker:
             boxes_resized = resize_boxes(last_pos_padded, blob['img'].shape[-2:],
                                          self.obj_detect.preprocessed_images.image_sizes[0])
 
+            if self.motion_cfg['feature_level'] is None:
+                # select correct level
+                levels = [self.map_levels([last_pos[-1].unsqueeze(0)]).item()]
+                features = list(self.last_features)[-last_pos_padded.shape[0]:]
+                features = [torch.cat([f[levels[0]] for f in features])]
+            else:
+                levels = None
+                features = torch.cat(list(self.last_features)[-last_pos_padded.shape[0]:])
+
             prediction = self.motion_network.predict(
                 padded.unsqueeze(0),
                 boxes_resized,
-                torch.cat(list(self.last_features)[-last_pos_padded.shape[0]:]),
+                features,
                 torch.tensor(self.obj_detect.preprocessed_images.image_sizes[0]).repeat(last_pos_padded.shape[0], 1),
                 torch.tensor([last_pos_padded.shape[0]]),
                 output_length=1,
-                track_id=t.id if self.cont_encoder else None
+                track_id=t.id if self.cont_encoder else None,
+                levels=levels
             )
 
-            #scale = torch.tensor([0.44444, 0.44444, 0.44444, 0.44444]).cuda()
-            scales = torch.tensor(self.obj_detect.original_image_sizes[0]).float() / torch.tensor([1080, 1920])
-            scale = scales.max()
-
-            t.last_v += prediction[0, 0, :4] * scale.cuda()
-            t.pos = clip_boxes_to_image(t.pos + t.last_v, blob['img'].shape[-2:])
+            if self.motion_cfg['use_box_coding']:
+                if self.motion_cfg['predict_coded_a']:
+                    # prediction is the acceleration in encoding space
+                    last_offset = padded[[-1], :4]
+                    pred_offset = last_offset + prediction[0, 0, :4]
+                    pred_pos = self.box_coder.decode([pred_offset], [last_pos[-1].unsqueeze(0)])
+                else:
+                    # prediction is the absolute encoded offset
+                    pred_pos = self.box_coder.decode(list(prediction[:, :, :4]), [last_pos[-1].unsqueeze(0)])
+                t.pos = clip_boxes_to_image(pred_pos[0], blob['img'].shape[-2:])
+            else:
+                scales = torch.tensor(self.obj_detect.original_image_sizes[0]).float() / torch.tensor([1080, 1920])
+                scale = scales.max()
+                t.pos = clip_boxes_to_image(t.pos + prediction[0, 0, :4] * scale.cuda(), blob['img'].shape[-2:])
 
     def step(self, blob):
         """This function should be called every time step to perform tracking with a blob
@@ -430,7 +471,10 @@ class Tracker:
                     # save whole image as feature
                     self.last_features.append(self.obj_detect.preprocessed_images.tensors)
                 else:
-                    self.last_features.append(self.obj_detect.features[self.motion_cfg['feature_level']])
+                    if self.motion_cfg['feature_level'] is not None:
+                        self.last_features.append(self.obj_detect.features[self.motion_cfg['feature_level']])
+                    else:
+                        self.last_features.append(self.obj_detect.features)
 
         if self.public_detections:
             dets = blob['dets'].squeeze(dim=0)
@@ -487,6 +531,7 @@ class Tracker:
                 self.tracks = [t for t in self.tracks if t.has_positive_area()]
 
                 if self.motion_cfg['hallucinate']:
+                    assert not self.motion_cfg['use_env_mm']
                     for t in self.inactive_tracks:
                         #t.pos += t.last_v
                         #continue
@@ -507,6 +552,10 @@ class Tracker:
                         mean = diff[-5:, :4].mean(0)
                         t.pos = clip_boxes_to_image(t.pos + mean, blob['img'].shape[-2:])
 
+            # save pos as predicted by mm
+            for t in self.tracks:
+                t.mm_pos = t.pos.clone()
+
             # regress
             if len(self.tracks):
                 person_scores = self.regress_tracks(blob)
@@ -523,6 +572,17 @@ class Tracker:
                     if self.do_reid:
                         new_features = self.get_appearances(blob)
                         self.add_features(new_features)
+
+            if 'use_env_mm' in self.motion_cfg and self.motion_cfg['use_env_mm']:
+                # calculate mean offset of all active tracks
+                offsets = []
+                for t in self.tracks:
+                    offsets.append(t.pos - t.last_pos[-1])
+                if len(offsets) >= 3:
+                    mean_offset = torch.cat(offsets).mean(0)
+                    if mean_offset.max() > 5:
+                        for t in self.inactive_tracks:
+                            t.pos = clip_boxes_to_image(t.pos + mean_offset, blob['img'].shape[-2:])
 
         #####################
         # Create new tracks #
@@ -570,12 +630,12 @@ class Tracker:
         for t in self.tracks:
             if t.id not in self.results.keys():
                 self.results[t.id] = {}
-            self.results[t.id][self.im_index] = np.concatenate([t.pos[0].cpu().numpy(), np.array([t.score, 0])])
+            self.results[t.id][self.im_index] = np.concatenate([t.pos[0].cpu().numpy(), np.array([t.score, 0]), t.mm_pos[0].cpu().numpy()])
 
         if self.write_inactives:
             for t in self.inactive_tracks:
                 # flag inactive tracks with a "1" in last column
-                self.results[t.id][self.im_index] = np.concatenate([t.pos[0].cpu().numpy(), np.array([t.score, 1])])
+                self.results[t.id][self.im_index] = np.concatenate([t.pos[0].cpu().numpy(), np.array([t.score, 1]), t.mm_pos[0].cpu().numpy()])
 
         ###########
         # Cleanup #
@@ -610,6 +670,7 @@ class Track(object):
         self.last_pos = deque([], maxlen=mm_steps + 1)
         self.last_pos_aligned = deque([], maxlen=mm_steps + 1)
         self.last_v = torch.zeros(4).cuda()
+        self.mm_pos = torch.zeros(1, 4).cuda()
         self.gt_id = None
 
     def has_positive_area(self):

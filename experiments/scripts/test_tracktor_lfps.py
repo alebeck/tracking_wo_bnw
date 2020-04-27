@@ -83,19 +83,23 @@ def main(tracktor, reid, _config, _log, _run):
     else:
         tracker = Tracker(obj_detect, reid_network, motion_network, tracktor['tracker'], tracktor['motion'], 2)
 
+    skip_n = 30 // tracktor['frame_rate']
+
     time_total = 0
     num_frames = 0
     mot_accums = []
     dataset = Datasets(tracktor['dataset'])
     for seq in dataset:
         tracker.reset()
-
         start = time.time()
-
         _log.info(f"Tracking: {seq}")
 
         data_loader = DataLoader(seq, batch_size=1, shuffle=False)
         for i, frame in enumerate(tqdm(data_loader)):
+            if i % skip_n != 0:
+                # skip frame
+                continue
+
             if len(seq) * tracktor['frame_split'][0] <= i <= len(seq) * tracktor['frame_split'][1]:
                 with torch.no_grad():
                     tracker.step(frame)
@@ -107,18 +111,20 @@ def main(tracktor, reid, _config, _log, _run):
         _log.info(f"Tracks found: {len(results)}")
         _log.info(f"Runtime for {seq}: {time.time() - start :.1f} s.")
 
+        # expand time
+        expanded = {}
+        for track_id, track in results.items():
+            expanded[track_id] = {}
+            for frame in track:
+                expanded[track_id][frame * skip_n] = track[frame]
+
+        results = expanded
+
         if tracktor['interpolate']:
             results = interpolate(results)
 
         if tracktor['write_images']:
             plot_sequence(results, seq, osp.join(output_dir, tracktor['dataset'], str(seq)), tracktor['tracker']['plot_mm'])
-
-        # if not tracktor['write_hallucinations']:
-        #     # remove hallucinations from results
-        #     for track in results.values():
-        #         for frame in track:
-        #             if track[frame][5] == 1:
-        #                 del track[frame]
 
         if seq.no_gt:
             _log.info(f"No GT data for evaluation available.")

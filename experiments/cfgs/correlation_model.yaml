@@ -14,15 +14,21 @@ tracktor:
       n_box_channels: 32
       roi_output_size: 1
       avg_box_features: false
+      max_box_features: false
       hidden_size: 128
       input_length: 5
       n_layers: 2
       dropout: 0.
       correlation_only: false
       use_env_features: false
+      fixed_env: false
       use_height_feature: false
       correlation_last_only: false
       use_attention: true
+      sum_lstm_layers: true
+      use_pre_conv: false
+      coarse_corr: false
+      fine_corr: false
 
     network_weights: null
     feature_level: 2
@@ -30,3 +36,6 @@ tracktor:
     data_std: [1., 1., 1., 1.] #[4.1137, 2.1125, 3.9754, 2.4975]
     use_cam_features: false
     use_correlation_model: true
+    use_box_coding: false
+    box_coding_weights: [1., 1., 1., 1.]
+    predict_coded_a: true

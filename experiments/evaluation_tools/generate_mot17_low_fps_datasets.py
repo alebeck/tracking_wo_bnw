@@ -8,10 +8,10 @@ if __name__ == "__main__":
     labels_dir = "/usr/stud/beckera/tracking_wo_bnw/data/MOT17Labels/train/"
     imgs_dir = "/usr/stud/beckera/tracking_wo_bnw/data/MOT17Det/train/"
 
-    frame_skips = [1, 2, 3, 5, 6, 10, 15, 30]
+    frame_skips = [1, 2, 3, 5, 6, 10, 15, 30, 60]
 
-    #train_sequences = ["MOT17-02-FRCNN", "MOT17-04-FRCNN", "MOT17-09-FRCNN", "MOT17-10-FRCNN", "MOT17-11-FRCNN"]
-    train_sequences = ["MOT17-04-FRCNN"]
+    train_sequences = ["MOT17-02-FRCNN", "MOT17-04-FRCNN", "MOT17-09-FRCNN", "MOT17-10-FRCNN", "MOT17-11-FRCNN"]
+    #train_sequences = ["MOT17-04-FRCNN"]
 
     if os.path.exists(data_dir):
         shutil.rmtree(data_dir)

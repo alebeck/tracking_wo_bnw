@@ -87,7 +87,7 @@ def bbox_overlaps(boxes, query_boxes):
     return out_fn(overlaps)
 
 
-def plot_sequence(tracks, db, output_dir):
+def plot_sequence(tracks, db, output_dir, plot_mm=False):
     """Plots a whole sequence
 
     Args:
@@ -129,19 +129,33 @@ def plot_sequence(tracks, db, output_dir):
         for j, t in tracks.items():
             if i in t.keys():
                 t_i = t[i]
-                ax.add_patch(
-                    plt.Rectangle(
-                        (t_i[0], t_i[1]),
-                        t_i[2] - t_i[0],
-                        t_i[3] - t_i[1],
-                        fill=False,
-                        linewidth=1.0,
-                        linestyle='--' if (len(t_i) > 5 and t_i[5] == 1) else '-',  # dash hallucinations
-                        **styles[j]
-                    ))
+                if not plot_mm or t_i[5] == 0:
+                    ax.add_patch(
+                        plt.Rectangle(
+                            (t_i[0], t_i[1]),
+                            t_i[2] - t_i[0],
+                            t_i[3] - t_i[1],
+                            fill=False,
+                            linewidth=1.0,
+                            linestyle='--' if (len(t_i) > 5 and t_i[5] == 1) else '-',  # dash hallucinations
+                            **styles[j]
+                        ))
 
-                ax.annotate(j, (t_i[0] + (t_i[2] - t_i[0]) / 2.0, t_i[1] + (t_i[3] - t_i[1]) / 2.0),
-                            color=styles[j]['ec'], weight='bold', fontsize=6, ha='center', va='center')
+                    ax.annotate(j, (t_i[0] + (t_i[2] - t_i[0]) / 2.0, t_i[1] + (t_i[3] - t_i[1]) / 2.0),
+                                color=styles[j]['ec'], weight='bold', fontsize=6, ha='center', va='center')
+
+                if np.any(t_i[6:10]) and plot_mm:
+                    ax.add_patch(
+                        plt.Rectangle(
+                            (t_i[6], t_i[7]),
+                            t_i[8] - t_i[6],
+                            t_i[9] - t_i[7],
+                            fill=False,
+                            linewidth=1.0,
+                            linestyle='--',
+                            alpha=0.7,
+                            **styles[j]
+                        ))
 
         plt.axis('off')
         # plt.tight_layout()

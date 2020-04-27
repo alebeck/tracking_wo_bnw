@@ -10,17 +10,18 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR
 import yaml
+from torchvision.models.detection._utils import BoxCoder
 from tqdm import tqdm
 import sacred
 from sacred import Experiment
 from torch_trainer import TorchTrainer, TrainingConfig, context
 
-from tracktor.motion import CorrelationSeq2Seq, FRCNNSeq2Seq
+from tracktor.motion import CorrelationSeq2Seq, FRCNNSeq2Seq, RelativeCorrelationModel
 from tracktor.frcnn_fpn import FRCNN_FPN
 from tracktor.reid.resnet import resnet50
 from tracktor.tracker import Tracker
 from tracktor.datasets.factory import Datasets
-from tracktor.datasets.episodes import EpisodeDataset, EpisodeImageDataset, collate
+from tracktor.datasets.episodes import EpisodeDataset, EpisodeImageDataset, MultiLevelDataset, collate, ml_collate
 from tracktor.utils import \
     plot_sequence, get_mot_accum, evaluate_mot_accums, seed_everything, intersection, jaccard, evaluate_classes
 
@@ -39,37 +40,25 @@ class Trainer(TorchTrainer):
         else:
             raise ValueError(f'Unknown scheduler: {context.cfg.scheduler_type}')
 
-    def criterion(self, input, target, last_pos=None):
+        if context.cfg.use_box_coding:
+            self.use_box_coding = True
+            self.predict_coded_a = context.cfg.predict_coded_a
+            self.loss_coded = context.cfg.loss_coded
+            self.box_coder = BoxCoder(context.cfg.box_coding_weights)
+        else:
+            self.use_box_coding = False
+            self.loss_coded = False
+
+    def criterion(self, input, target):
         input = input.view(-1, 4)
         target = target.view(-1, 4)
+        assert context.cfg.loss == 'mse'
+        return self.mse(input, target).mean()
 
-        if input.shape[0] == 0:
-            return torch.tensor(float('nan'))
-
-        if context.cfg.loss == 'iou':
-            mask = intersection(input, target) > 0
-            if (mask == 0).sum():
-                # non-overlapping boxes
-                loss = self.mse(input[~mask], target[~mask]).mean() * context.cfg.lmbda
-            else:
-                loss = torch.tensor(0.).cuda()
-            loss += (jaccard(input[mask], target[mask]) * -1).mean()
-
-        elif context.cfg.loss == 'mse':
-            loss = self.mse(input, target).mean()
-
-        elif context.cfg.loss == 'wmse':
-            last_pos = last_pos.view(-1, 4)
-            iou = torch.zeros(input.shape[0]).to(input.device)
-            mask = intersection(last_pos, target) > 0
-            iou[mask] = jaccard(last_pos[mask], target[mask])
-
-            weight = (iou ** 2) - (2 * iou) + 2
-            loss = (self.mse(input, target).mean(1) * weight.detach()).mean()
-
-        else:
-            raise ValueError()
-
+    def criterion_coded(self, prediction, x, target, last_coded):
+        target_coded = self.box_coder.encode(list(target[:, :, :4]), list(x[:, [-1], :4]))
+        last_coded = last_coded[:, [-1], :4]
+        loss = self.criterion(prediction[:, :, :4], torch.stack(target_coded) - last_coded)
         return loss
 
     def epoch(self):
@@ -88,34 +77,61 @@ class Trainer(TorchTrainer):
         all_pred_pos = []
         all_prev_pos = []
 
-        for boxes_in, boxes_target, boxes_resized, image_features, image_sizes, lengths in tqdm(context.data_loader):
+        for boxes_in, boxes_target, boxes_resized, image_features, image_sizes, lengths, levels in tqdm(context.data_loader):
             # move tensors to GPU
             boxes_in = boxes_in.cuda()
             boxes_target = boxes_target.cuda()
             boxes_resized = boxes_resized.cuda()
             # in case we're working with float16 features, only convert to float32 once they're on the gpu
-            image_features = image_features.cuda().float()
+            if isinstance(image_features, list):
+                image_features = [feat.cuda().float() for feat in image_features]
+            else:
+                image_features = image_features.cuda().float()
 
             diffs = torch.zeros(boxes_in.shape[0], context.cfg.model_args['input_length'], 6).cuda()
-            diffs[:, :, :4] = boxes_in[:, 1:, :4] - boxes_in[:, :-1, :4]  # raises error if model and dataset lengths do not match
+            if self.use_box_coding:
+                encoded = self.box_coder.encode(list(boxes_in[:, 1:, :4]), list(boxes_in[:, :-1, :4]))
+                diffs[:, :, :4] = torch.stack(encoded, dim=0)
+            else:
+                # raises error if model and dataset lengths do not match
+                diffs[:, :, :4] = boxes_in[:, 1:, :4] - boxes_in[:, :-1, :4]
             diffs[:, :, 5] = 1.
             diffs[(boxes_in[:, :, 5] == 0.)[:, :-1]] = 0.
 
             if not context.validate:
                 self.optim.zero_grad()
                 do_tf = context.cfg.teacher_forcing > 0 and np.random.uniform() < context.cfg.teacher_forcing
-                out = context.model(diffs, boxes_target, boxes_resized, image_features, image_sizes, lengths, do_tf)
+                out = context.model(diffs, boxes_target, boxes_resized, image_features,
+                                    image_sizes, lengths, do_tf, levels=levels)
             else:
-                out = context.model.predict(diffs, boxes_resized, image_features, image_sizes, lengths, boxes_target.shape[1])
+                out = context.model.predict(diffs, boxes_resized, image_features, image_sizes,
+                                            lengths, boxes_target.shape[1], levels=levels)
 
-            #out[:, :, :4] = out[:, :, :4] * torch.tensor(context.cfg.data_std).cuda()[:4] + torch.tensor(
-            #    context.cfg.data_mean).cuda()[:4]
             assert out.shape[1] == 1
-
             last_input = boxes_in[:, -1, :].unsqueeze(1)
-            pred_pos = last_input[:, :, :4] + diffs[:, [-1], :4] + out[:, :, :4]
 
-            loss = self.criterion(pred_pos, boxes_target[:, :, :4], last_input[:, :, :4])
+            if self.use_box_coding:
+                if self.predict_coded_a:
+                    # out is the acceleration in encoding space
+                    last_offset = diffs[:, [-1], :4]
+                    pred_offset = last_offset + out[:, :, :4]
+                    pred_pos = self.box_coder.decode(list(pred_offset), list(last_input))
+                else:
+                    # out is the absolute encoded offset
+                    pred_pos = self.box_coder.decode(list(out[:, :, :4]), list(last_input))
+            else:
+                pred_pos = last_input[:, :, :4] + diffs[:, [-1], :4] + out[:, :, :4]
+
+            if self.loss_coded:
+                if self.predict_coded_a:
+                    target_coded = self.box_coder.encode(list(boxes_target[:, :, :4]), list(boxes_in[:, [-1], :4]))
+                    last_coded = diffs[:, [-1], :4]
+                    loss = self.criterion(out[:, :, :4], torch.stack(target_coded) - last_coded)
+                else:
+                    target_coded = self.box_coder.encode(list(boxes_target[:, :, :4]), list(boxes_in[:, [-1], :4]))
+                    loss = self.criterion(out[:, :, :4], torch.stack(target_coded))
+            else:
+                loss = self.criterion(pred_pos, boxes_target[:, :, :4], last_input[:, :, :4])
             loss_epoch.append(loss.detach().cpu())
 
             # DIFFERENT LENGTH ANALYSIS
@@ -313,10 +329,14 @@ def main(tracktor, reid, train, _config, _log, _run):
         loss=train['loss'],
         lmbda=train['lmbda'],
         tracktor_val_every=train['tracktor_val_every'],
-        collate_fn=collate,
+        collate_fn=ml_collate if train['dataset'] == 'MultiLevelDataset' else collate,
         resume=train['resume'],
         resume_optimizer=train['resume_optimizer'],
-        pin_memory=train['pin_memory']
+        pin_memory=train['pin_memory'],
+        use_box_coding=tracktor['motion']['use_box_coding'],
+        box_coding_weights=tracktor['motion']['box_coding_weights'],
+        predict_coded_a=tracktor['motion']['predict_coded_a'],
+        loss_coded=tracktor['motion']['loss_coded']
     )
 
     def validate_tracktor(motion_network, epoch, do_val):

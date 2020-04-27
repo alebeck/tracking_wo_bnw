@@ -41,7 +41,7 @@ tracktor:
       input_length: 5
     hallucinate: false
     hallucinate_cva_only: false
-    model_inactives: true
+    use_box_coding: false
 
   tracker:
     # FRCNN score threshold for detections
@@ -81,3 +81,4 @@ tracktor:
     # should we include hallucinated parts in results?
     write_inactives: false
     do_mm_align: false
+    plot_mm: false

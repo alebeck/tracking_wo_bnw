@@ -10,7 +10,7 @@ _sets = {}
 
 # Fill all available datasets, change here to modify / add new datasets.
 for split in ['train', 'test', 'all', 'val', 'smallTrain', '01', '02', '03', '04', '05', '06', '07', '08', '09',
-              '10', '11', '12', '13', '14']:
+              '10', '11', '12', '13', '14', 'lfps']:
     for dets in ['DPM16', 'DPM_RAW16', 'DPM17', 'FRCNN17', 'SDP17', '17', '']:
         _sets[f'mot17_{split}_{dets}'] = (lambda split=split, dets=dets, **args: MOT17_Wrapper(split, dets, **args))
 
@@ -19,7 +19,7 @@ for split in ['train', 'test', 'all', '01', '02', '03', '04', '05', '06', '07', 
     name = f'mot19_cvpr_{split}'
     _sets[name] = (lambda split=split, **args: MOT19CVPR_Wrapper(split, **args))
 
-for split in ['1', '2', '3', '5', '6', '10', '15', '30']:
+for split in ['0.5', '1', '2', '3', '5', '6', '10', '15', '30']:
     # only FRCNN detections
     name = f'mot17_{split}_fps'
     _sets[name] = (lambda split=split, **args: MOT17LOWFPS_Wrapper(split, **args))
