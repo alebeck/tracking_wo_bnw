@@ -100,8 +100,8 @@ class MOT17LOWFPS_Wrapper(MOT17_Wrapper):
 		dataloader -- args for the MOT_Sequence dataloader
 		"""
 
-		#sequences = ['MOT17-02', 'MOT17-04', 'MOT17-09', 'MOT17-10', 'MOT17-11']
-		sequences = ['MOT17-11']
+		sequences = ['MOT17-02', 'MOT17-04', 'MOT17-09', 'MOT17-10', 'MOT17-11']
+		#sequences = ['MOT17-04']
 
 		self._data = []
 		for s in sequences:

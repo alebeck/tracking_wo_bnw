@@ -110,15 +110,15 @@ def main(tracktor, reid, _config, _log, _run):
         if tracktor['interpolate']:
             results = interpolate(results)
 
+        if 'semi' in tracktor and tracktor['semi']:
+            for i, track in results.items():
+                for frame in sorted(track, reverse=True):
+                    if track[frame][5] == 0:
+                        break
+                    del track[frame]
+
         if tracktor['write_images']:
             plot_sequence(results, seq, osp.join(output_dir, tracktor['dataset'], str(seq)), tracktor['tracker']['plot_mm'])
-
-        # if not tracktor['write_hallucinations']:
-        #     # remove hallucinations from results
-        #     for track in results.values():
-        #         for frame in track:
-        #             if track[frame][5] == 1:
-        #                 del track[frame]
 
         if seq.no_gt:
             _log.info(f"No GT data for evaluation available.")

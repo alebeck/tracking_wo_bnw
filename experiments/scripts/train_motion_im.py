@@ -73,6 +73,8 @@ class Trainer(TorchTrainer):
         miou_epoch = []
 
         all_input = []
+        all_out = []
+        all_diffs = []
         all_gt = []
         all_pred_pos = []
         all_prev_pos = []
@@ -122,48 +124,27 @@ class Trainer(TorchTrainer):
             else:
                 pred_pos = last_input[:, :, :4] + diffs[:, [-1], :4] + out[:, :, :4]
 
-            if self.loss_coded:
-                if self.predict_coded_a:
-                    target_coded = self.box_coder.encode(list(boxes_target[:, :, :4]), list(boxes_in[:, [-1], :4]))
-                    last_coded = diffs[:, [-1], :4]
-                    loss = self.criterion(out[:, :, :4], torch.stack(target_coded) - last_coded)
-                else:
-                    target_coded = self.box_coder.encode(list(boxes_target[:, :, :4]), list(boxes_in[:, [-1], :4]))
-                    loss = self.criterion(out[:, :, :4], torch.stack(target_coded))
+            # calculate loss
+            if self.use_box_coding:
+                # target_coded = self.box_coder.encode(list(target[:, :, :4]), list(x[:, [-1], :4]))
+                last_coded = diffs[:, [-1], :4]
+                # loss = self.criterion(out[:, :, :4], torch.stack(target_coded) - last_coded)
+                loss = self.criterion_coded(out, boxes_in, boxes_target, last_coded)
             else:
-                loss = self.criterion(pred_pos, boxes_target[:, :, :4], last_input[:, :, :4])
+                loss = self.criterion(pred_pos, boxes_target[:, :, :4])
+
             loss_epoch.append(loss.detach().cpu())
 
             # DIFFERENT LENGTH ANALYSIS
-            mask_1 = lengths == 2
-            loss_1 = self.criterion(pred_pos[mask_1], boxes_target[:, :, :4][mask_1], last_input[:, :, :4][mask_1])
-            if not (loss_1 != loss_1):
-                loss_1_epoch.append(loss_1.detach().cpu())
-
-            mask_2 = lengths == 3
-            loss_2 = self.criterion(pred_pos[mask_2], boxes_target[:, :, :4][mask_2], last_input[:, :, :4][mask_2])
-            if not (loss_2 != loss_2):
-                loss_2_epoch.append(loss_2.detach().cpu())
-
-            mask_3 = lengths == 4
-            loss_3 = self.criterion(pred_pos[mask_3], boxes_target[:, :, :4][mask_3], last_input[:, :, :4][mask_3])
-            if not (loss_3 != loss_3):
-                loss_3_epoch.append(loss_3.detach().cpu())
-
-            mask_4 = lengths == 5
-            loss_4 = self.criterion(pred_pos[mask_4], boxes_target[:, :, :4][mask_4], last_input[:, :, :4][mask_4])
-            if not (loss_4 != loss_4):
-                loss_4_epoch.append(loss_4.detach().cpu())
-
-            mask_5 = lengths == 6
-            loss_5 = self.criterion(pred_pos[mask_5], boxes_target[:, :, :4][mask_5], last_input[:, :, :4][mask_5])
-            if not (loss_5 != loss_5):
-                loss_5_epoch.append(loss_5.detach().cpu())
-
-            mask_6 = lengths == 7
-            loss_6 = self.criterion(pred_pos[mask_6], boxes_target[:, :, :4][mask_6], last_input[:, :, :4][mask_6])
-            if not (loss_6 != loss_6):
-                loss_6_epoch.append(loss_6.detach().cpu())
+            loss_lists = [loss_1_epoch, loss_2_epoch, loss_3_epoch, loss_4_epoch, loss_5_epoch, loss_6_epoch]
+            for i, loss_list in zip(range(2, 8), loss_lists):
+                mask = lengths == i
+                if mask.any():
+                    if self.use_box_coding:
+                        loss_part = self.criterion_coded(out[mask], boxes_in[mask], boxes_target[mask], diffs[mask])
+                    else:
+                        loss_part = self.criterion(pred_pos[mask], boxes_target[:, :, :4][mask])
+                    loss_list.append(loss_part.detach().cpu())
 
             if not context.validate and context.epoch > 0:
                 loss.backward()
@@ -171,6 +152,8 @@ class Trainer(TorchTrainer):
                 self.optim.step()
 
             all_input.append(boxes_in.detach().cpu())
+            all_out.append(out.detach().cpu())
+            all_diffs.append(diffs.detach().cpu())
             all_gt.append(boxes_target[:, :, :4].detach().cpu())
             all_pred_pos.append(pred_pos.detach().cpu())
             all_prev_pos.append(torch.cat([
@@ -185,6 +168,8 @@ class Trainer(TorchTrainer):
             miou_epoch.append((iou > 0.7).sum().float() / len(iou))
 
         all_input = torch.cat(all_input)  # e.g [94920, 6, 12]
+        all_out = torch.cat(all_out)
+        all_diffs = torch.cat(all_diffs)
         all_gt = torch.cat(all_gt)
         all_pred_pos = torch.cat(all_pred_pos)
         all_prev_pos = torch.cat(all_prev_pos)
@@ -201,12 +186,24 @@ class Trainer(TorchTrainer):
         v_mean = v_mean.squeeze(1)
 
         pred_cva = all_input[:, -1, :4] + v_mean
+        val_mask = ((pred_cva[:, 2] - pred_cva[:, 0]) >= 0) & ((pred_cva[:, 3] - pred_cva[:, 1]) >= 0)
+
         iou_cva = jaccard(pred_cva, all_gt.squeeze(1)).mean()
         miou_cva = (jaccard(pred_cva, all_gt.squeeze(1)) > 0.7).sum().float() / len(pred_cva)
-        loss_cva = self.criterion(pred_cva, all_gt.squeeze(1), all_input[:, -1, :4])
+
+        if self.use_box_coding:
+            offset_cva = self.box_coder.encode(list(pred_cva[val_mask].unsqueeze(1)[:, :, :4]), list(all_input[val_mask][:, [-1], :4]))
+            coded_cva = torch.stack(offset_cva) - all_diffs[val_mask][:, [-1], :4]
+            loss_cva = self.criterion_coded(coded_cva, all_input[val_mask], all_gt[val_mask], all_diffs[val_mask])
+        else:
+            loss_cva = self.criterion(pred_cva, all_gt.squeeze(1))
 
         if context.validate:
-            loss_epoch = self.criterion(all_pred_pos.squeeze(1)[:, :4], all_gt.squeeze(1), all_input[:, -1, :4]).mean()
+            if self.use_box_coding:
+                loss_epoch = self.criterion_coded(all_out, all_input, all_gt, all_diffs)
+            else:
+                loss_epoch = self.criterion(all_pred_pos.squeeze(1)[:, :4], all_gt.squeeze(1)).mean()
+
             iou = jaccard(all_pred_pos.squeeze(1)[:, :4], all_gt.squeeze(1))
             iou_epoch = iou.mean()
             miou_epoch = ((iou > 0.7).sum().float() / len(iou))
@@ -234,6 +231,7 @@ class Trainer(TorchTrainer):
 
         metrics = {
             'loss': loss_epoch,
+            'old': 0.0,
             'iou': iou_epoch,
             'miou': miou_epoch,
             'iou_cva': iou_cva,

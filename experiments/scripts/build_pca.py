@@ -30,7 +30,8 @@ print(f'Using sequences {SEQS}')
 ipca = IncrementalPCA(n_components=N_COMPONENTS)
 
 for seq in SEQS:
-    f = np.load(f'data/features/{seq}-features.npy', mmap_mode='r')
+    print(f'Processing sequence {seq}')
+    f = np.load(INPUT_PATH / f'{seq}-features.npy', mmap_mode='r')
     # go through images in 150 frame steps
     idx = 0
     while idx < f.shape[0] - 1:

@@ -142,7 +142,7 @@ def plot_sequence(tracks, db, output_dir, plot_mm=False):
                         ))
 
                     ax.annotate(j, (t_i[0] + (t_i[2] - t_i[0]) / 2.0, t_i[1] + (t_i[3] - t_i[1]) / 2.0),
-                                color=styles[j]['ec'], weight='bold', fontsize=6, ha='center', va='center')
+                                color=styles[j]['ec'], weight='bold', fontsize=12, ha='center', va='center')
 
                 if np.any(t_i[6:10]) and plot_mm:
                     ax.add_patch(
@@ -437,6 +437,18 @@ def jaccard(ex_box, gt_box):
     insec = intersection(ex_box, gt_box)
     uni = areasum(ex_box, gt_box) - insec
     return insec.float() / uni
+
+
+def infer_scale(feature, original_size):
+    # assumption: the scale is of the form 2 ** (-k), with k integer
+    size = feature.shape[-2:]
+    possible_scales = []
+    for s1, s2 in zip(size, original_size):
+        approx_scale = float(s1) / float(s2)
+        scale = 2 ** torch.tensor(approx_scale).log2().round().item()
+        possible_scales.append(scale)
+    assert possible_scales[0] == possible_scales[1]
+    return possible_scales[0]
 
 
 def evaluate_classes(boxes_before, boxes, boxes_pred):

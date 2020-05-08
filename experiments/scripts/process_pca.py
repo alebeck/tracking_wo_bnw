@@ -30,6 +30,7 @@ with PCA_PATH.open('rb') as fh:
     ipca = pickle.load(fh)
 
 for seq in SEQS:
+    print(f'Processing {seq}', flush=True)
     f = np.load(INPUT_PATH / f'{seq}-features.npy', mmap_mode='r')
     out = []
 
