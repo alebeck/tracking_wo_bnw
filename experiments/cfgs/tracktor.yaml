@@ -41,6 +41,7 @@ tracktor:
       input_length: 5
     hallucinate: false
     hallucinate_cva_only: false
+    mm_hallucinate: false
     use_box_coding: false
 
   tracker:

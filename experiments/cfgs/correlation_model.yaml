@@ -27,8 +27,6 @@ tracktor:
       use_attention: true
       sum_lstm_layers: true
       use_pre_conv: false
-      coarse_corr: false
-      fine_corr: false
 
     network_weights: null
     feature_level: 2

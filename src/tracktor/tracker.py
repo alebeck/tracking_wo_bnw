@@ -7,11 +7,10 @@ import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 import cv2
 from torchvision.models.detection._utils import BoxCoder
-from torchvision.ops.poolers import LevelMapper
-
-from .utils import bbox_overlaps, warp_pos, get_center, infer_scale, jaccard
 from torchvision.ops.boxes import clip_boxes_to_image, nms
 from torchvision.models.detection.transform import resize_boxes
+
+from .utils import bbox_overlaps, warp_pos, get_center, infer_scale
 
 
 class Tracker:
@@ -42,9 +41,6 @@ class Tracker:
         self.cam_features_1_only = tracker_cfg['cam_features_1_only']
         self.write_inactives = tracker_cfg['write_inactives']
         self.cont_encoder = tracker_cfg.get('cont_encoder', False)
-        self.use_safety_net = motion_cfg.get('use_safety_net', False)
-        if self.use_safety_net:
-            assert self.motion_cfg['use_box_coding']
 
         self.warp_mode = eval(tracker_cfg['warp_mode'])
         self.number_of_iterations = tracker_cfg['number_of_iterations']
@@ -52,8 +48,6 @@ class Tracker:
 
         if self.motion_cfg['use_box_coding']:
             self.box_coder = BoxCoder(self.motion_cfg['box_coding_weights'])
-
-        self.map_levels = LevelMapper(2.0, 5.0)
 
         self.tracks = []
         self.inactive_tracks = []
@@ -360,15 +354,7 @@ class Tracker:
             boxes_resized = resize_boxes(last_pos_padded, blob['img'].shape[-2:],
                                          self.obj_detect.preprocessed_images.image_sizes[0])
 
-            if self.motion_cfg['feature_level'] is None:
-                # select correct level
-                levels = [self.map_levels([last_pos[-1].unsqueeze(0)]).item()]
-                #levels[0] = levels[0] if levels[0] <= 1 else 1
-                features = list(self.last_features)[-last_pos_padded.shape[0]:]
-                features = torch.cat([f[levels[0]] for f in features])
-            else:
-                levels = None
-                features = torch.cat(list(self.last_features)[-last_pos_padded.shape[0]:])
+            features = torch.cat(list(self.last_features)[-last_pos_padded.shape[0]:])
 
             if self.do_align and self.align_actives:
                 trans = get_center(t.pos) - get_center(t.before_align_pos)
@@ -413,8 +399,7 @@ class Tracker:
                 torch.tensor(self.obj_detect.preprocessed_images.image_sizes[0]).repeat(last_pos_padded.shape[0], 1),
                 torch.tensor([last_pos_padded.shape[0]]),
                 output_length=1,
-                track_id=t.id if self.cont_encoder else None,
-                levels=levels
+                track_id=t.id if self.cont_encoder else None
             )
 
             if self.motion_cfg['use_box_coding']:
@@ -426,21 +411,7 @@ class Tracker:
                 else:
                     # prediction is the absolute encoded offset
                     pred_pos = self.box_coder.decode(list(prediction[:, :, :4]), [last_pos[-1].unsqueeze(0)])
-
-                if self.use_safety_net:
-                    if det_pos.shape[0] == 0 or pred_pos[0,0,2] - pred_pos[0,0,0] <= 0 \
-                            or pred_pos[0,0,3] - pred_pos[0,0,1] <= 0:
-                        continue
-
-                    max_iou = jaccard(pred_pos[0].repeat(det_pos.shape[0], 1), det_pos).max()
-                    if max_iou > 0.5:
-                        t.pos = clip_boxes_to_image(pred_pos[0], blob['img'].shape[-2:])
-                    elif len(t.last_pos_aligned) > 1:
-                        last_pos_a = torch.cat(list(t.last_pos_aligned), dim=0)
-                        v_mean = (last_pos_a[1:] - last_pos_a[:-1])[-5:, :4].mean(0)
-                        t.pos = clip_boxes_to_image(t.pos + v_mean, blob['img'].shape[-2:])
-                else:
-                    t.pos = clip_boxes_to_image(pred_pos[0], blob['img'].shape[-2:])
+                t.pos = clip_boxes_to_image(pred_pos[0], blob['img'].shape[-2:])
             else:
                 scales = torch.tensor(self.obj_detect.original_image_sizes[0]).float() / torch.tensor([1080, 1920])
                 scale = scales.max()
