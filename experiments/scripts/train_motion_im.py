@@ -14,7 +14,6 @@ from torchvision.models.detection._utils import BoxCoder
 from tqdm import tqdm
 import sacred
 from sacred import Experiment
-from torch_trainer import TorchTrainer, TrainingConfig, context
 
 from tracktor.motion import CorrelationSeq2Seq, FRCNNSeq2Seq, RelativeCorrelationModel
 from tracktor.frcnn_fpn import FRCNN_FPN
@@ -23,7 +22,8 @@ from tracktor.tracker import Tracker
 from tracktor.datasets.factory import Datasets
 from tracktor.datasets.episodes import EpisodeDataset, EpisodeImageDataset, MultiLevelDataset, collate, ml_collate
 from tracktor.utils import \
-    plot_sequence, get_mot_accum, evaluate_mot_accums, seed_everything, intersection, jaccard, evaluate_classes
+    plot_sequence, get_mot_accum, evaluate_mot_accums, seed_everything, jaccard, evaluate_classes
+from tracktor.motion.trainer import TorchTrainer, TrainingConfig, context
 
 
 class Trainer(TorchTrainer):
@@ -104,10 +104,10 @@ class Trainer(TorchTrainer):
                 self.optim.zero_grad()
                 do_tf = context.cfg.teacher_forcing > 0 and np.random.uniform() < context.cfg.teacher_forcing
                 out = context.model(diffs, boxes_target, boxes_resized, image_features,
-                                    image_sizes, lengths, do_tf, levels=levels)
+                                    image_sizes, lengths, do_tf)
             else:
                 out = context.model.predict(diffs, boxes_resized, image_features, image_sizes,
-                                            lengths, boxes_target.shape[1], levels=levels)
+                                            lengths, boxes_target.shape[1])
 
             assert out.shape[1] == 1
             last_input = boxes_in[:, -1, :].unsqueeze(1)

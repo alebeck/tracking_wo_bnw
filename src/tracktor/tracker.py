@@ -1,3 +1,4 @@
+import time
 from collections import deque, OrderedDict
 import pickle
 
@@ -227,6 +228,7 @@ class Tracker:
 
     def align(self, blob):
         """Aligns the positions of active and inactive tracks depending on camera motion."""
+        t_warp = None
         if self.im_index > 0:
             im1 = np.transpose(self.last_image.cpu().numpy(), (1, 2, 0))
             im2 = np.transpose(blob['img'][0].cpu().numpy(), (1, 2, 0))
@@ -234,7 +236,11 @@ class Tracker:
             im2_gray = cv2.cvtColor(im2, cv2.COLOR_RGB2GRAY)
             warp_matrix = np.eye(2, 3, dtype=np.float32)
             criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, self.number_of_iterations, self.termination_eps)
+
+            t_warp_start = time.time()
             cc, warp_matrix = cv2.findTransformECC(im1_gray, im2_gray, warp_matrix, self.warp_mode, criteria)
+            t_warp = time.time() - t_warp_start
+
             warp_matrix = torch.from_numpy(warp_matrix)
             self.last_warps.append(warp_matrix.cuda())
 
@@ -258,6 +264,8 @@ class Tracker:
             for t in self.tracks:
                 for i in range(len(t.last_pos_aligned)):
                     t.last_pos_aligned[i] = warp_pos(t.last_pos_aligned[i], warp_matrix)
+
+        return t_warp
 
     def motion(self, blob):
         for t in self.tracks:
@@ -313,7 +321,7 @@ class Tracker:
             for t in self.inactive_tracks:
                 t.pos = clip_boxes_to_image(t.pos + t.last_v, blob['img'].shape[-2:])
 
-    def motion_correlation(self, blob, det_pos, use_inactives=False):
+    def motion_correlation(self, blob, use_inactives=False):
         for t in self.inactive_tracks if use_inactives else self.tracks:
             assert len(t.last_pos) > 0
             if use_inactives:
@@ -417,6 +425,129 @@ class Tracker:
                 scale = scales.max()
                 t.pos = clip_boxes_to_image(t.pos + prediction[0, 0, :4] * scale.cuda(), blob['img'].shape[-2:])
 
+    def motion_correlation_batched(self, blob):
+        all_padded = []
+        all_last_pos_padded = []
+        all_boxes_resized = []
+        all_last_pos = []
+
+        for t in self.tracks:
+            assert len(t.last_pos) > 0
+            last_pos = torch.cat(list(t.last_pos), dim=0)
+
+            if len(t.last_pos) < self.min_length - 1:
+                raise ValueError('sequence length that the model was not trained for')
+
+            if len(t.last_pos) > 1:
+                if self.motion_cfg['use_box_coding']:
+                    # [0] because batch size == 0
+                    diff = self.box_coder.encode([last_pos[1:, :4]], [last_pos[:-1, :4]])[0]
+                    diff = torch.cat([diff, torch.zeros(diff.shape[0], 2).cuda()], dim=1)
+                    diff[:, 5] = 1  # not padding
+                else:
+                    scales = torch.tensor([1080, 1920]) / torch.tensor(self.obj_detect.original_image_sizes[0]).float()
+                    scale = scales.min()
+
+                    diff = last_pos[1:] - last_pos[:-1]
+                    diff = torch.cat([diff, torch.zeros(diff.shape[0], 2).cuda()], dim=1)
+                    diff[:, 5] = 1  # not padding
+                    t.pos = clip_boxes_to_image(t.pos + diff[-1, :4], blob['img'].shape[-2:])
+
+                    diff[:, :4] = diff[:, :4] * scale
+                    #t.last_v = diff[-1, :4]  # add last diff to last_v, acceleration will be added below
+            else:
+                diff = torch.zeros(0, 6).cuda()
+                #t.last_v = torch.zeros(4).cuda()
+
+            padding = torch.zeros(self.motion_cfg['model_args']['input_length'] - diff.shape[0], 6).cuda()
+            padded = torch.cat([padding, diff], dim=0)
+
+            # boxes_resized has to have same length as box features, pad with zero
+            last_pos_padded = torch.cat([last_pos, torch.zeros(1, 4).cuda()])
+            # convert position to resized image
+            boxes_resized = resize_boxes(last_pos_padded, blob['img'].shape[-2:],
+                                         self.obj_detect.preprocessed_images.image_sizes[0])
+
+            #features = torch.cat(list(self.last_features)[-last_pos_padded.shape[0]:])
+
+            if self.do_align and self.align_actives:
+                trans = get_center(t.pos) - get_center(t.before_align_pos)
+                scale = infer_scale(features, self.obj_detect.preprocessed_images.image_sizes[0])
+                # resize translation
+                trans_res = resize_boxes(
+                    trans.repeat(1, 2),
+                    self.obj_detect.original_image_sizes[0],
+                    self.obj_detect.preprocessed_images.image_sizes[0]
+                )[0, :2]
+
+                t.feature_translations.append((trans_res * scale).round())
+                last_translations = t.feature_translations[-(features.shape[0] - 1):]
+                accu_trans = torch.stack(last_translations).flip(dims=(0,)).cumsum(dim=0).flip(dims=(0,))
+
+                feature_h, feature_w = features.shape[-2:]
+
+                # assemble past feature maps
+                features_translated = []
+                for i in range(features.shape[0] - 1):
+                    trans_feat = accu_trans[i]
+                    # translate i-th map with i-th translation
+                    pad_left = int(trans_feat[0]) if trans_feat[0] > 0 else 0
+                    pad_right = int(trans_feat[0].abs()) if trans_feat[0] < 0 else 0
+                    pad_top = int(trans_feat[1]) if trans_feat[1] > 0 else 0
+                    pad_bottom = int(trans_feat[1].abs()) if trans_feat[1] < 0 else 0
+
+                    feat_padded = F.pad(features[i], [pad_left, pad_right, pad_top, pad_bottom])
+                    features_translated.append(
+                        feat_padded[:, pad_bottom:(pad_bottom + feature_h), pad_right:(pad_right + feature_w)]
+                    )
+                    assert features_translated[-1].shape[-2:] == (feature_h, feature_w)
+
+                # add last feature map
+                features_translated.append(features[-1])
+                features = torch.stack(features_translated)
+
+            # save values to be batched afterwards
+            all_padded.append(padded)
+            all_last_pos_padded.append(last_pos_padded)
+            all_last_pos.append(last_pos)
+            all_boxes_resized.append(boxes_resized)
+
+        lengths = torch.tensor([l.shape[0] for l in all_last_pos_padded])
+
+        # make prediction
+        prediction = self.motion_network.predict(
+            torch.stack(all_padded),
+            torch.cat(all_boxes_resized),
+            torch.cat(list(self.last_features)[-lengths.max():]),
+            torch.tensor(self.obj_detect.preprocessed_images.image_sizes[0]).repeat(sum([len(l) for l in all_last_pos_padded]), 1),
+            lengths,
+            output_length=1,
+            track_id=None,
+            batched=True
+        )
+
+        # apply predictions to individual tracks
+        for i, t in enumerate(self.tracks):
+            if self.motion_cfg['use_box_coding']:
+                if self.motion_cfg['predict_coded_a']:
+                    # prediction is the acceleration in encoding space
+                    last_offset = all_padded[i][[-1], :4]
+                    pred_offset = last_offset + prediction[i, 0, :4]
+                    pred_pos = self.box_coder.decode([pred_offset], [all_last_pos[i][-1].unsqueeze(0)])
+                    #if not torch.isclose(clip_boxes_to_image(pred_pos[0], blob['img'].shape[-2:]), t.pos).all():
+                    #    print(clip_boxes_to_image(pred_pos[0], blob['img'].shape[-2:]))
+                    #    print(t.pos)
+                    #    assert False
+                    #continue
+                else:
+                    # prediction is the absolute encoded offset
+                    pred_pos = self.box_coder.decode(list(prediction[[i], :, :4]), [all_last_pos[i][-1].unsqueeze(0)])
+                t.pos = clip_boxes_to_image(pred_pos[0], blob['img'].shape[-2:])
+            else:
+                scales = torch.tensor(self.obj_detect.original_image_sizes[0]).float() / torch.tensor([1080, 1920])
+                scale = scales.max()
+                t.pos = clip_boxes_to_image(t.pos + prediction[i, 0, :4] * scale.cuda(), blob['img'].shape[-2:])
+
     def step(self, blob):
         """This function should be called every time step to perform tracking with a blob
         containing the image information.
@@ -490,17 +621,24 @@ class Tracker:
         # Predict tracks #
         ##################
 
+        # report the times that the motion model took
+        mm_time = None
+        warp_time = None
+
         if len(self.tracks):
+            t_start = time.time()
             # align
             if self.do_align:
-                self.align(blob)
+                warp_time = self.align(blob)
 
             self.tracks = [t for t in self.tracks if t.has_positive_area()]
 
             # apply motion model
             if self.motion_model_enabled:
-                if self.motion_cfg['use_correlation_model']:
-                    self.motion_correlation(blob, det_pos)
+                if self.motion_cfg['use_correlation_model'] and not self.motion_cfg.get('batched', False):
+                    self.motion_correlation(blob)
+                elif self.motion_cfg['use_correlation_model']:
+                    self.motion_correlation_batched(blob)
                 elif self.motion_cfg['use_cva_model']:
                     self.motion_cva(blob)
                 elif self.motion_cfg['use_pos_model']:
@@ -532,7 +670,9 @@ class Tracker:
                         t.pos = clip_boxes_to_image(t.pos + mean, blob['img'].shape[-2:])
 
                 elif self.motion_cfg['mm_hallucinate']:
-                    self.motion_correlation(blob, None, use_inactives=True)
+                    self.motion_correlation(blob, use_inactives=True)
+
+            mm_time = time.time() - t_start
 
             # save pos as predicted by mm
             for t in self.tracks:
@@ -621,6 +761,8 @@ class Tracker:
 
         self.im_index += 1
         self.last_image = blob['img'][0]
+
+        return mm_time, warp_time
 
     def get_results(self):
         return self.results

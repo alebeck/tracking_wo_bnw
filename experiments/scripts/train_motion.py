@@ -14,7 +14,6 @@ from torchvision.models.detection._utils import BoxCoder
 from tqdm import tqdm
 import sacred
 from sacred import Experiment
-from torch_trainer import TorchTrainer, TrainingConfig, context
 
 from tracktor.motion import Seq2Seq
 from tracktor.frcnn_fpn import FRCNN_FPN
@@ -23,7 +22,8 @@ from tracktor.tracker import Tracker
 from tracktor.datasets.factory import Datasets
 from tracktor.datasets.episodes import EpisodeDataset, EpisodeImageDataset
 from tracktor.utils import \
-    plot_sequence, get_mot_accum, evaluate_mot_accums, seed_everything, intersection, jaccard, evaluate_classes
+    plot_sequence, get_mot_accum, evaluate_mot_accums, seed_everything, jaccard, evaluate_classes
+from tracktor.motion.trainer import TorchTrainer, TrainingConfig, context
 
 
 class Trainer(TorchTrainer):

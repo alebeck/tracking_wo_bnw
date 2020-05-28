@@ -317,11 +317,11 @@ class CorrelationSeq2Seq(nn.Module):
 
         return torch.cat(out_seq, dim=1)
 
-    def predict(self, diffs, boxes_resized, image_features, image_sizes, lengths, output_length, track_id=None):
+    def predict(self, diffs, boxes_resized, image_features, image_sizes, lengths, output_length, track_id=None, batched=False):
         assert output_length == 1
 
         encoder_out, decoder_in, last_h, last_c = \
-            self.prepare_decoder(diffs, boxes_resized, image_features, image_sizes, lengths, track_id=track_id)
+            self.prepare_decoder(diffs, boxes_resized, image_features, image_sizes, lengths, track_id=track_id, batched=batched)
         out_seq = []
 
         for i in range(output_length):
@@ -472,11 +472,11 @@ class RelativeCorrelationModel(CorrelationSeq2Seq):
             )
         self.linear2 = nn.Linear(self.hidden_size, self.output_size)
 
-    def prepare_decoder(self, diffs, boxes_resized, image_features, image_sizes, lengths, track_id=None):
+    def prepare_decoder(self, diffs, boxes_resized, image_features, image_sizes, lengths, track_id=None, batched=False):
         B, L, F = diffs.shape
 
         bounds = (torch.cumsum(lengths, dim=0) - 1).tolist()
-        keep = torch.tensor(list(set(range(len(image_sizes) - 1)).difference(set(bounds[:-1]))))
+        keep = torch.tensor(sorted(list(set(range(len(image_sizes) - 1)).difference(set(bounds[:-1])))))
 
         if self.use_pre_conv:
             assert not isinstance(image_features, list)
@@ -495,9 +495,28 @@ class RelativeCorrelationModel(CorrelationSeq2Seq):
         proposals = list((boxes_resized[keep] + dpos).unsqueeze(1))
         if self.use_roi_align:
             if self.fixed_env:
-                prev_features = self.ext_large_roi_pool(OrderedDict([(0, image_features[keep])]), proposals, image_sizes[keep].tolist())
-                next_features = self.ext_large_roi_pool(OrderedDict([(0, image_features[keep + 1])]), proposals, image_sizes[keep + 1].tolist())
+                if batched:
+                    #ordinaries = torch.cat([torch.arange(l-1) for l in lengths])
+                    box_to_images = torch.cat([torch.arange(lengths.max() - l, lengths.max() - 1) for l in lengths])
+
+                    enlarged_boxes = boxes_resized[keep] + dpos
+                    proposals = [enlarged_boxes[box_to_images == l] for l in range(lengths.max() - 1)]
+                    image_sizes = image_sizes[0].repeat(len(image_features)-1, 1)
+
+                    perm = torch.zeros_like(box_to_images)
+                    current_i = 0
+                    for i in range(box_to_images.max().item() + 1):
+                        mask = box_to_images == i
+                        perm[mask] = torch.arange(current_i, current_i + mask.sum().item())
+                        current_i = perm.max() + 1
+
+                    prev_features = self.ext_large_roi_pool(OrderedDict([(0, image_features[:-1])]), proposals, image_sizes.tolist())[perm]
+                    next_features = self.ext_large_roi_pool(OrderedDict([(0, image_features[1:])]), proposals, image_sizes.tolist())[perm]
+                else:
+                    prev_features = self.ext_large_roi_pool(OrderedDict([(0, image_features[keep])]), proposals, image_sizes[keep].tolist())
+                    next_features = self.ext_large_roi_pool(OrderedDict([(0, image_features[keep + 1])]), proposals, image_sizes[keep + 1].tolist())
             else:
+                assert not batched
                 prev_features = self.large_roi_pool(OrderedDict([(0, image_features[keep])]), proposals, image_sizes[keep].tolist())
                 next_features = self.large_roi_pool(OrderedDict([(0, image_features[keep + 1])]), proposals, image_sizes[keep + 1].tolist())
         else:

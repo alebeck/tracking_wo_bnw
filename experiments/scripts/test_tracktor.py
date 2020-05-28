@@ -89,16 +89,20 @@ def main(tracktor, reid, _config, _log, _run):
     dataset = Datasets(tracktor['dataset'])
     for seq in dataset:
         tracker.reset()
+        _log.info(f"Tracking: {seq}")
+        data_loader = DataLoader(seq, batch_size=1, shuffle=False)
 
         start = time.time()
-
-        _log.info(f"Tracking: {seq}")
-
-        data_loader = DataLoader(seq, batch_size=1, shuffle=False)
+        all_mm_times = []
+        all_warp_times = []
         for i, frame in enumerate(tqdm(data_loader)):
             if len(seq) * tracktor['frame_split'][0] <= i <= len(seq) * tracktor['frame_split'][1]:
                 with torch.no_grad():
-                    tracker.step(frame)
+                    mm_time, warp_time = tracker.step(frame)
+                    if mm_time is not None:
+                        all_mm_times.append(mm_time)
+                    if warp_time is not None:
+                        all_warp_times.append(warp_time)
                 num_frames += 1
         results = tracker.get_results()
 
@@ -106,6 +110,10 @@ def main(tracktor, reid, _config, _log, _run):
 
         _log.info(f"Tracks found: {len(results)}")
         _log.info(f"Runtime for {seq}: {time.time() - start :.1f} s.")
+        _log.info(f"Average FPS for {seq}: {len(data_loader) / (time.time() - start) :.3f}")
+        _log.info(f"Average MM time for {seq}: {float(np.array(all_mm_times).mean()) :.3f} s")
+        if all_warp_times:
+            _log.info(f"Average warp time for {seq}: {float(np.array(all_warp_times).mean()) :.3f} s")
 
         if tracktor['interpolate']:
             results = interpolate(results)
