@@ -58,15 +58,16 @@ def main(tracktor, reid, _config, _log, _run):
     _log.info("Initializing object detector.")
 
     obj_detect = FRCNN_FPN(num_classes=2)
-    obj_detect_state_dict = torch.load(_config['tracktor']['obj_detect_model'])
-    obj_detect.load_state_dict(obj_detect_state_dict)
+    obj_detect.load_state_dict(torch.load(_config['tracktor']['obj_detect_model'],
+                               map_location=lambda storage, loc: storage))
 
-    obj_detect.eval() 
+    obj_detect.eval()
     obj_detect.cuda()
 
     # reid
     reid_network = resnet50(pretrained=False, **reid['cnn'])
-    reid_network.load_state_dict(torch.load(tracktor['reid_weights']))
+    reid_network.load_state_dict(torch.load(tracktor['reid_weights'],
+                                 map_location=lambda storage, loc: storage))
     reid_network.eval()
     reid_network.cuda()
 
@@ -137,6 +138,6 @@ def main(tracktor, reid, _config, _log, _run):
         seq.write_results(results, output_dir)
 
     _log.info(f"Tracking runtime for all sequences (without evaluation or image writing): "
-              f"{time_total:.1f} s ({num_frames / time_total:.1f} Hz)")
+              f"{time_total:.2f} s for {num_frames} frames ({num_frames / time_total:.2f} Hz)")
     if mot_accums:
         evaluate_mot_accums(mot_accums, [str(s) for s in dataset if not s.no_gt], generate_overall=True)

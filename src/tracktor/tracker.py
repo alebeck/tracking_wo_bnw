@@ -100,9 +100,9 @@ class Tracker:
         """Regress the position of the tracks and also checks their scores."""
         pos = self.get_pos()
 
-        # regress
-        boxes, scores = self.obj_detect.predict_boxes(pos)
-        pos = clip_boxes_to_image(boxes, blob['img'].shape[-2:])
+		# regress
+		boxes, scores = self.obj_detect.predict_boxes(pos)
+		pos = clip_boxes_to_image(boxes, blob['img'].shape[-2:])
 
         s = []
         for i in range(len(self.tracks) - 1, -1, -1):
@@ -611,10 +611,9 @@ class Tracker:
 
                 self.tracks_to_inactive([self.tracks[i] for i in list(range(len(self.tracks))) if i not in keep])
 
-                if keep.nelement() > 0:
-                    if self.do_reid:
-                        new_features = self.get_appearances(blob)
-                        self.add_features(new_features)
+				if keep.nelement() > 0 and self.do_reid:
+						new_features = self.get_appearances(blob)
+						self.add_features(new_features)
 
         #####################
         # Create new tracks #
