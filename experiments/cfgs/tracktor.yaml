@@ -34,14 +34,12 @@ tracktor:
     use_correlation_model: false
     use_cva_model: false
     use_pos_model: false
-    reduce_features: null
+    reduce_features: output/pca/pca_final.pt
     data_mean: [0., 0., 0., 0.]
     data_std: [1., 1., 1., 1.]
     model_args:
       input_length: 5
-    hallucinate: false
-    hallucinate_cva_only: false
-    mm_hallucinate: false
+    cva_reid: true
     use_box_coding: false
 
   tracker:
@@ -72,8 +70,8 @@ tracktor:
     termination_eps: 0.00001
     # Use siamese network to do reid
     do_reid: True
-    # How much timesteps dead tracks are kept and cosidered for reid
-    inactive_patience: 10
+    # How much timesteps dead tracks are kept and considered for reid
+    inactive_patience: 80
     # How similar do image and old track need to be to be considered the same person
     reid_sim_threshold: 2.0
     # How much IoU do track and image need to be considered for matching
@@ -81,5 +79,5 @@ tracktor:
     cam_features_1_only: false
     # should we include hallucinated parts in results?
     write_inactives: false
-    do_mm_align: false
+    # plot boxes predicted by motion model?
     plot_mm: false

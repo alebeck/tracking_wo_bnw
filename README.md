@@ -1,96 +1,56 @@
-# Tracking without bells and whistles
+# Learning a Motion Model for Multiple Object Tracking
 
-This repository provides the implementation of our paper **Tracking without bells and whistles** (Philipp Bergmann, Tim Meinhardt, Laura Leal-Taixe) [https://arxiv.org/abs/1903.05625]. This branch includes an updated version of Tracktor for PyTorch 1.X with an improved object detector. The original results of the paper were produced with the code in the `iccv_19` branch.
+This repository provides the implementation for my master's thesis, where a motion model for MOT has been developed. The motion model aims at maximizing the IoU between object bounding boxes of consecutive frames, thus facilitating the performance of a _Tracktor_ tracker [Bergmann et al., 2019]. As features, the model exploits both the previous trajectory of an object and correlations between the convolutional feature maps of adjacent frames.
 
-In addition to our supplementary document, we provide an illustrative [web-video-collection](https://vision.in.tum.de/webshare/u/meinhard/tracking_wo_bnw-supp_video_collection.zip). The collection includes examplary Tracktor++ tracking results and multiple video examples to accompany our analysis of state-of-the-art tracking methods.
-
-![Visualization of Tracktor](data/method_vis_standalone.png)
+Our model significantly increases Tracktor performance, achieving scores comparable to much slower baseline methods in the case of non-occluded objects. Further, we combine our model and a motion compensation algorithm into a hybrid method which -- at the time of publishing -- is able to outperform the best baseline on the test set, while reaching far superior performance at low frame rates.
 
 ## Installation
 
-1. Clone and enter this repository:
-  ```
-  git clone https://github.com/phil-bergmann/tracking_wo_bnw
-  cd tracking_wo_bnw
-  ```
+1. Follow the instructions of how to install the Tracktor framework, as provided at https://github.com/phil-bergmann/tracking_wo_bnw#installation. However, instead of their repository, clone this one during step 1. The object detector weights used for training the provided motion model can be downloaded [here](https://drive.google.com/file/d/1PfUlHiwaxZG3aKmC8geV34j-7Se8cbWH/view?usp=sharing), in case of changes in the upstream repository.
 
-2. Install packages for Python 3.7 in [virtualenv](https://uoa-eresearch.github.io/eresearch-cookbook/recipe/2014/11/26/python-virtual-env/):
-    1. `pip3 install -r requirements.txt`
-    2. Install Tracktor: `pip3 install -e .`
+2. Compile the feature correlation layer [Fischer et al., 2015] that is provided alongside our code:
 
-3. MOTChallenge data:
-    1. Download [MOT17Det](https://motchallenge.net/data/MOT17Det.zip), [MOT16Labels](https://motchallenge.net/data/MOT16Labels.zip), [2DMOT2015](https://motchallenge.net/data/2DMOT2015.zip), [MOT16-det-dpm-raw](https://motchallenge.net/data/MOT16-det-dpm-raw.zip) and [MOT17Labels](https://motchallenge.net/data/MOT17Labels.zip) and place them in the `data` folder. As the images are the same for MOT17Det, MOT17 and MOT16 we only need one set of images for all three benchmarks.
-    2. Unzip all the data by executing:
-    ```
-    unzip -d MOT17Det MOT17Det.zip
-    unzip -d MOT16Labels MOT16Labels.zip
-    unzip -d 2DMOT2015 2DMOT2015.zip
-    unzip -d MOT16-det-dpm-raw MOT16-det-dpm-raw.zip
-    unzip -d MOT17Labels MOT17Labels.zip
-    ```
+      ```bash
+      cd src/tracktor/motion/correlation
+      pip install .
+      ```
+   
+    You can change the `nvcc_args` defined in `setup.py` to match your GPU architecture.
+    
+3. Download the final correlation model weights from [here](https://drive.google.com/file/d/1P8YW-KIjq9BRuy42x5rzfKlFlKjWCqi3/view?usp=sharing) and move the file into the `output/motion` directory.
 
-4. Download object detector and re-identifiaction Siamese network weights and MOTChallenge result files for ICCV 2019:
-    1. Download zip file from [here](https://vision.in.tum.de/webshare/u/meinhard/tracking_wo_bnw-output_v2.zip).
-    2. Extract in `output` directory.
+4. Download the PCA parameters for feature dimensionality reduction from [here](https://drive.google.com/file/d/1Hi_oLnCIWqs9a9jkLtl5unt_RJfEwb5V/view?usp=sharing) and move the file into the `output/pca` directory.
 
-## Evaluate Tracktor++
-In order to configure, organize, log and reproduce our computational experiments we structured our code with the [Sacred](http://sacred.readthedocs.io/en/latest/index.html) framework. For a detailed explanation of the Sacred interface please read its documentation.
+## Evaluate Tracktor with the motion model
 
-1. Tracktor can be configured by changing the corresponding `experiments/cfgs/tracktor.yaml` config file. The default configuration runs Tracktor++ with the FPN object detector as described in the paper.
+Tracktor configuration is done through the `experiments/cfgs/tracktor.yaml`  file. The correlation model can be configured by changing the `experiments/cfgs/correlation_model.yaml` file. By default, the hybrid model with `CMCCVA-reID` inactive strategy and an inactive patience of 80 frames is evaluated.
 
 2. Run Tracktor by executing:
 
-  ```
-  python experiments/scripts/test_tracktor.py
+  ```bash
+  python experiments/scripts/test_tracktor.py with correlation_model
   ```
 
-3. The results are logged in the corresponding `output` directory.
+3. The results are logged into the corresponding `output` directory.
 
-For reproducability, we provide the new result metrics of this updated code base on the `MOT17` challenge. It should be noted, that these surpass the original Tracktor results. This is due to the newly trained object detector. This version of Tracktor does not differ conceptually from the original ICCV 2019 version (see branch `iccv_19`). The train and test results are:
+For reproducibility, the train and test set results on the MOT17 dataset are supplied in the following:
 
 ```
 ********************* MOT17 TRAIN Results *********************
-IDF1  IDP  IDR| Rcll  Prcn   FAR|   GT  MT   PT   ML|    FP    FN   IDs    FM|  MOTA  MOTP MOTAL
-65.2 83.8 53.3| 63.1  99.2  0.11| 1638 550  714  374|  1732124291   903  1258|  62.3  89.6  62.6
+IDF1  IDP  IDR| Rcll  Prcn|   GT  MT   PT   ML|    FP    FN   IDs    FM|  MOTA  MOTP
+69.0 88.7 56.4| 63.1  99.2| 1638 553  718  367|  1639 124167  552  1342|  62.5  89.6
 
 ********************* MOT17 TEST Results *********************
-IDF1  IDP  IDR| Rcll  Prcn   FAR|   GT  MT   PT   ML|    FP    FN   IDs    FM|  MOTA  MOTP MOTAL
-55.1 73.6 44.1| 58.3  97.4  0.50| 2355 498 1026  831|  8866235449  1987  3763|  56.3  78.8  56.7
+IDF1  IDP  IDR| Rcll  Prcn|   GT  MT   PT   ML|    FP    FN   IDs    FM|  MOTA  MOTP
+60.2 80.3 48.1| 58.3  97.4| 2355 499 1027  829|  8839 235129  1333 3715|  56.5  78.9
 ```
 
-## Train and test object detector (Faster-RCNN with FPN)
+## Training
 
-For the object detector we followed the new native `torchvision` implementations of Faster-RCNN with FPN which are pretrained on COCO. The provided object detection model was trained and tested with [this](https://colab.research.google.com/drive/1_arNo-81SnqfbdtAhb3TBSU5H0JXQ0_1) Google Colab notebook. The `MOT17Det` train and test results are:
+The training configuration can be found in `experiments/cfgs/train_motion_im.yaml`. With our code, we supply a training framework which takes care of validating, logging, checkpointing and automatic resuming of training runs. Start training by running
 
-```
-********************* MOT17Det TRAIN Results ***********
-Average Precision: 0.9090
-Rcll  Prcn|  FAR     GT     TP     FP     FN| MODA  MODP
-97.9  93.8| 0.81  66393  64989   4330   1404| 91.4  87.4
-
-********************* MOT17Det TEST Results ***********
-Average Precision: 0.8150
-Rcll  Prcn|  FAR     GT     TP     FP     FN| MODA  MODP
-86.5  88.3| 2.23 114564  99132  13184  15432| 75.0  78.3
+```bash
+python experiments/scripts/train_motion_im.py with correlation_model train.name=<training_run_name>
 ```
 
-## Training the reidentifaction model
-
-1. The training config file is located at `experiments/cfgs/reid.yaml`.
-
-2. Start training by executing:
-  ```
-  python experiments/scripts/train_reid.py
-  ```
-
-## Publication
- If you use this software in your research, please cite our publication:
-
-```
-  @InProceedings{tracktor_2019_ICCV,
-  author = {Bergmann, Philipp and Meinhardt, Tim and Leal{-}Taix{\'{e}}}, Laura},
-  title = {Tracking Without Bells and Whistles},
-  booktitle = {The IEEE International Conference on Computer Vision (ICCV)},
-  month = {October},
-  year = {2019}}
-```
+Checkpoints and logs will be saved into the `output/motion/<training_run_name>` directory.

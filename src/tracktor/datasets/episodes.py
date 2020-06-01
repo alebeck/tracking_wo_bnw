@@ -1,12 +1,10 @@
 import csv
-from collections import OrderedDict
 from pathlib import Path
 import math
-
 import configparser
+
 import numpy as np
 import pandas as pd
-import cv2
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
@@ -15,20 +13,11 @@ from torchvision.models.detection.transform import resize_boxes
 from torchvision.ops.poolers import LevelMapper
 from torchvision.transforms import ToTensor
 
+from tracktor.utils import infer_scale
+
+
 roi_scales = [0.25, 0.125, 0.0625, 0.03125]
 map_levels = LevelMapper(2.0, 5.0)
-
-
-def infer_scale(feature, original_size):
-    # assumption: the scale is of the form 2 ** (-k), with k integer
-    size = feature.shape[-2:]
-    possible_scales = []
-    for s1, s2 in zip(size, original_size):
-        approx_scale = float(s1) / float(s2)
-        scale = 2 ** torch.tensor(approx_scale).log2().round().item()
-        possible_scales.append(scale)
-    assert possible_scales[0] == possible_scales[1]
-    return possible_scales[0]
 
 
 class EpisodeDataset(Dataset):
@@ -113,9 +102,7 @@ class EpisodeDataset(Dataset):
 
     def __getitem__(self, index):
         ep_index, data_index = self.index_map[index]
-        #data = self.tracks[ep_index][data_index:(data_index + self.episode_length)].copy()
         seq = self.track_ids[ep_index][:8]
-
         do_skip = torch.rand(()) < self.skip_prob
 
         if do_skip:
@@ -139,17 +126,11 @@ class EpisodeDataset(Dataset):
         data = torch.from_numpy(self.tracks[ep_index][data_idc].copy())
         assert data.shape[0] == length
 
-        # length = torch.randint(self.min_length, len(data) + 1, ())
-        # data = data[:length]
-        # data = torch.from_numpy(data)
-
         # augmentation
         widths = data[:, 2] - data[:, 0]
         heights = data[:, 3] - data[:, 1]
-        # rel_noise = (torch.rand(len(data), 4) * self.max_noise * 2) - self.max_noise
         rel_noise = torch.randn(data.shape[0], 4) * self.max_noise
         noise = rel_noise * torch.stack([widths, heights, widths, heights], dim=1)
-        # noise += cam_noise[:, [2, 5]].repeat(1, 2)
         if not self.augment_target:
             noise[-self.target_length:] = 0.
         data[:, :4] += noise
@@ -196,7 +177,6 @@ class EpisodeImageDataset(Dataset):
             cam_motion_large=False,
             flip_prob=0.,
             flipped_features_path=None,
-            jitter=False,
             mmap=False
     ):
         assert isinstance(sequences, list)
@@ -221,7 +201,6 @@ class EpisodeImageDataset(Dataset):
         self.cam_motion_large = cam_motion_large
         self.flip_prob = flip_prob
         self.flipped_features_path = Path(flipped_features_path) if flipped_features_path else None
-        self.jitter = jitter
         self.mmap_mode = 'r' if mmap else None
 
         self.train_seqs = [d.stem for d in (self.data_path / 'train').iterdir() if d.is_dir()]
@@ -321,13 +300,13 @@ class EpisodeImageDataset(Dataset):
         else:
             gaps = torch.randint(self.skip_n_min, max_skip + 1, (length - 1,))
 
-        data_idc = torch.cumsum(torch.cat([torch.tensor([data_index]), gaps + 1]), 0)  # +1 to account for the selected elems
+        # + 1 to account for the selected elements
+        data_idc = torch.cumsum(torch.cat([torch.tensor([data_index]), gaps + 1]), 0)
         data = torch.from_numpy(self.tracks[ep_index][data_idc].copy())
         assert data.shape[0] == length
 
         # cam motion injection
         feat_translation = torch.zeros(data.shape[0], 2)
-
         if self.cam_motion_all_seqs:
             allowed_seqs = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-10', 'MOT17-11', 'MOT17-13']
         else:
@@ -364,7 +343,7 @@ class EpisodeImageDataset(Dataset):
             h = data[idx_cam, 3] - data[idx_cam, 1]
             dx_cam = torch.FloatTensor(1).uniform_(-w, w)
             dy_cam = torch.FloatTensor(1).uniform_(-(h / 3), h / 3)
-            # continously apply delta to all positions starting from idx
+            # continuously apply delta to all positions starting from idx
             data[idx_cam:, :4] += torch.tensor([dx_cam, dy_cam, dx_cam, dy_cam]).repeat(data[idx_cam:].shape[0], 1).cumsum(0)
             feat_translation[idx_cam:, :] += torch.tensor([dx_cam, dy_cam]).repeat(data[idx_cam:].shape[0], 1).cumsum(0)
 
@@ -397,17 +376,9 @@ class EpisodeImageDataset(Dataset):
             # load normal features
             image_features = torch.from_numpy(self.image_features[seq][frames])
 
-        # if self.flip_prob > 0.0 and torch.rand(()) < self.flip_prob:
-        #     width = original_image_sizes[0, 1]
-        #     data[:, [0, 2]] = width.repeat(data.shape[0], 2) - data[:, [0, 2]]
-        #     if self.flipped_features_path is not None:
-        #         image_features = torch.from_numpy(self.flipped_features[seq][frames]).float()
-        # else:
-        #     image_features = torch.from_numpy(self.image_features[seq][frames]).float()
-
         # split to input and target
-        # resize these to 1080 x 1920
         boxes_in, boxes_target = data[:-self.target_length].clone(), data[-self.target_length:].clone()
+        # resize these to 1080 x 1920
         scales = torch.tensor([1080, 1920]) / torch.tensor(original_image_sizes[0]).float()
         scale = scales.min()
         boxes_in[:, :4] = boxes_in[:, :4] * scale
@@ -421,7 +392,7 @@ class EpisodeImageDataset(Dataset):
 
         # these will be resized in the collate function to allow for later RoI pooling
         boxes_all = data[:, :4].clone()
-        # we don't need target positions for RoI
+        # we don't need target positions
         boxes_all[-self.target_length:] = 0.
 
         return boxes_in, boxes_target, boxes_all, image_features, original_image_sizes, image_sizes, length, feat_translation
@@ -452,7 +423,6 @@ class MultiLevelDataset(Dataset):
             cam_motion_large=False,
             flip_prob=0.,
             flipped_features_path=None,
-            jitter=False,
             mmap=False,
             feature_levels=[0,1,2]
     ):
@@ -479,7 +449,6 @@ class MultiLevelDataset(Dataset):
         self.cam_motion_large = cam_motion_large
         self.flip_prob = flip_prob
         self.flipped_features_path = Path(flipped_features_path) if flipped_features_path else None
-        self.jitter = jitter
         self.mmap_mode = 'r' if mmap else None
 
         self.train_seqs = [d.stem for d in (self.data_path / 'train').iterdir() if d.is_dir()]
@@ -524,10 +493,8 @@ class MultiLevelDataset(Dataset):
             self.image_sizes[seq] = np.load(self.image_features_path / 'features-1-fp16' / f'{seq}-sizes.npy')
             self.original_image_sizes[seq] = np.load(self.image_features_path / 'features-1-fp16' / f'{seq}-origsizes.npy')
 
+            # don't support explicit flipped feature maps for the multi level dataset for now
             assert self.flipped_features_path is None
-
-        #self.scales = {l: infer_scale(self.image_features[seq][l], self.image_sizes[seq][0]) for l in
-        #               self.feature_levels}
 
         df = pd.DataFrame(
             positions,
@@ -589,7 +556,6 @@ class MultiLevelDataset(Dataset):
 
         # cam motion injection
         feat_translation = torch.zeros(data.shape[0], 2)
-
         if self.cam_motion_all_seqs:
             allowed_seqs = ['MOT17-02', 'MOT17-04', 'MOT17-05', 'MOT17-10', 'MOT17-11', 'MOT17-13']
         else:
@@ -626,7 +592,7 @@ class MultiLevelDataset(Dataset):
             h = data[idx_cam, 3] - data[idx_cam, 1]
             dx_cam = torch.FloatTensor(1).uniform_(-w, w)
             dy_cam = torch.FloatTensor(1).uniform_(-(h / 3), h / 3)
-            # continously apply delta to all positions starting from idx
+            # continuously apply delta to all positions starting from idx
             data[idx_cam:, :4] += torch.tensor([dx_cam, dy_cam, dx_cam, dy_cam]).repeat(data[idx_cam:].shape[0], 1).cumsum(0)
             feat_translation[idx_cam:, :] += torch.tensor([dx_cam, dy_cam]).repeat(data[idx_cam:].shape[0], 1).cumsum(0)
 
@@ -660,8 +626,8 @@ class MultiLevelDataset(Dataset):
             image_features = torch.from_numpy(self.image_features[seq][level][frames].copy())
 
         # split to input and target
-        # resize these to 1080 x 1920
         boxes_in, boxes_target = data[:-self.target_length].clone(), data[-self.target_length:].clone()
+        # resize these to 1080 x 1920
         scales = torch.tensor([1080, 1920]) / torch.tensor(original_image_sizes[0]).float()
         scale = scales.min()
         boxes_in[:, :4] = boxes_in[:, :4] * scale
@@ -675,47 +641,49 @@ class MultiLevelDataset(Dataset):
 
         # these will be resized in the collate function to allow for later RoI pooling
         boxes_all = data[:, :4].clone()
-        # we don't need target positions for RoI
+        # we don't need target positions
         boxes_all[-self.target_length:] = 0.
 
         return boxes_in, boxes_target, boxes_all, image_features, original_image_sizes, image_sizes, length, feat_translation
 
 
 def collate(elems):
-    boxes_in, boxes_target, boxes_all, image_features, original_image_sizes, image_sizes, lengths, feat_translation = zip(
-        *elems)
+    """
+    Collate function for PyTorch `DataLoader` that handles efficient batching of image features.
+    """
+    boxes_in, boxes_target, boxes_all, image_features, orig_image_sizes, image_sizes, lengths, feat_trans = zip(*elems)
     boxes_in = default_collate(boxes_in)
     lengths = default_collate(lengths)
     boxes_target = default_collate(boxes_target)
     image_features = torch.cat(image_features)
-    original_image_sizes = torch.cat(original_image_sizes)
+    orig_image_sizes = torch.cat(orig_image_sizes)
     image_sizes = torch.cat(image_sizes)
 
     # get resized bounding boxes for later RoI pooling
     first_idc = [int(sum(lengths[:i])) for i in range(0, len(lengths))]
     boxes_resized = []
     feat_translation_resized = []
-    for seq_start, boxes, feat_trans in zip(first_idc, boxes_all, feat_translation):
-        boxes_resized.append(resize_boxes(boxes, original_image_sizes[seq_start], image_sizes[seq_start]))
+    for seq_start, boxes, feat_trans in zip(first_idc, boxes_all, feat_trans):
+        boxes_resized.append(resize_boxes(boxes, orig_image_sizes[seq_start], image_sizes[seq_start]))
         feat_translation_resized.append(
-            resize_boxes(feat_trans.repeat(1, 2), original_image_sizes[seq_start], image_sizes[seq_start])[:, :2]
+            resize_boxes(feat_trans.repeat(1, 2), orig_image_sizes[seq_start], image_sizes[seq_start])[:, :2]
         )
     boxes_resized = torch.cat(boxes_resized)
     feat_translation_resized = torch.cat(feat_translation_resized)
 
     # calculate feature translation in feature scale
     scale = infer_scale(image_features, image_sizes[0])
-    feat_translation = (feat_translation_resized * scale).round()
+    feat_trans = (feat_translation_resized * scale).round()
 
     # apply translation to feature map
-    pad_w = int(feat_translation[:, 0].abs().max())
-    pad_h = int(feat_translation[:, 1].abs().max())
+    pad_w = int(feat_trans[:, 0].abs().max())
+    pad_h = int(feat_trans[:, 1].abs().max())
     if pad_w == 0 and pad_h == 0:
         feat_out = image_features
     else:
         feat_padded = F.pad(image_features, [pad_w, pad_w, pad_h, pad_h])
         origin = torch.tensor([pad_w, pad_h])
-        new_coords = (origin - feat_translation).long()
+        new_coords = (origin - feat_trans).long()
 
         h, w = image_features.shape[-2:]
         feat_out = []
@@ -728,40 +696,43 @@ def collate(elems):
 
 
 def ml_collate(elems):
-    boxes_in, boxes_target, boxes_all, image_features, original_image_sizes, image_sizes, lengths, feat_translation = zip(*elems)
+    """
+    Multi-level version of the `collate` function defined above.
+    """
+    boxes_in, boxes_target, boxes_all, image_features, orig_image_sizes, image_sizes, lengths, feat_trans = zip(*elems)
     boxes_in = default_collate(boxes_in)
     lengths = default_collate(lengths)
     boxes_target = default_collate(boxes_target)
 
-    original_image_sizes = torch.cat(original_image_sizes)
+    orig_image_sizes = torch.cat(orig_image_sizes)
     image_sizes = torch.cat(image_sizes)
 
     # get resized bounding boxes for later RoI pooling
     first_idc = [int(sum(lengths[:i])) for i in range(0, len(lengths))]
     boxes_resized = []
     feat_translation_resized = []
-    for seq_start, boxes, feat_trans in zip(first_idc, boxes_all, feat_translation):
-        boxes_resized.append(resize_boxes(boxes, original_image_sizes[seq_start], image_sizes[seq_start]))
+    for seq_start, boxes, feat_trans in zip(first_idc, boxes_all, feat_trans):
+        boxes_resized.append(resize_boxes(boxes, orig_image_sizes[seq_start], image_sizes[seq_start]))
         feat_translation_resized.append(
-            resize_boxes(feat_trans.repeat(1, 2), original_image_sizes[seq_start], image_sizes[seq_start])[:, :2]
+            resize_boxes(feat_trans.repeat(1, 2), orig_image_sizes[seq_start], image_sizes[seq_start])[:, :2]
         )
     boxes_resized = torch.cat(boxes_resized)
 
     # calculate feature translation in feature scale
     scales = [infer_scale(feat, image_sizes[0]) for feat in image_features]
-    feat_translation = [(t_resized * scale).round() for t_resized, scale in zip(feat_translation_resized, scales)]
+    feat_trans = [(t_resized * scale).round() for t_resized, scale in zip(feat_translation_resized, scales)]
 
     # apply translation to feature map
     all_feat_out = []
     for i, feat in enumerate(image_features):
-        pad_w = int(feat_translation[i][:, 0].abs().max())
-        pad_h = int(feat_translation[i][:, 1].abs().max())
+        pad_w = int(feat_trans[i][:, 0].abs().max())
+        pad_h = int(feat_trans[i][:, 1].abs().max())
         if pad_w == 0 and pad_h == 0:
             feat_out = feat
         else:
             feat_padded = F.pad(feat, [pad_w, pad_w, pad_h, pad_h])
             origin = torch.tensor([pad_w, pad_h])
-            new_coords = (origin - feat_translation[i]).long()
+            new_coords = (origin - feat_trans[i]).long()
 
             h, w = feat.shape[-2:]
             feat_out = []

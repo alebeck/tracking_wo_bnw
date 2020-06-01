@@ -9,9 +9,9 @@ import torch.backends.cudnn
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR
-import yaml
 from torchvision.models.detection._utils import BoxCoder
 from tqdm import tqdm
+import yaml
 import sacred
 from sacred import Experiment
 
@@ -63,12 +63,7 @@ class Trainer(TorchTrainer):
 
     def epoch(self):
         loss_epoch = []
-        loss_1_epoch = []
-        loss_2_epoch = []
-        loss_3_epoch = []
-        loss_4_epoch = []
-        loss_5_epoch = []
-        loss_6_epoch = []
+        loss_lengths = [[], [], [], [], [], []]  # losses for different episode lengths
         iou_epoch = []
         miou_epoch = []
 
@@ -126,9 +121,7 @@ class Trainer(TorchTrainer):
 
             # calculate loss
             if self.use_box_coding:
-                # target_coded = self.box_coder.encode(list(target[:, :, :4]), list(x[:, [-1], :4]))
                 last_coded = diffs[:, [-1], :4]
-                # loss = self.criterion(out[:, :, :4], torch.stack(target_coded) - last_coded)
                 loss = self.criterion_coded(out, boxes_in, boxes_target, last_coded)
             else:
                 loss = self.criterion(pred_pos, boxes_target[:, :, :4])
@@ -136,8 +129,7 @@ class Trainer(TorchTrainer):
             loss_epoch.append(loss.detach().cpu())
 
             # DIFFERENT LENGTH ANALYSIS
-            loss_lists = [loss_1_epoch, loss_2_epoch, loss_3_epoch, loss_4_epoch, loss_5_epoch, loss_6_epoch]
-            for i, loss_list in zip(range(2, 8), loss_lists):
+            for i, loss_list in zip(range(2, 8), loss_lengths):
                 mask = lengths == i
                 if mask.any():
                     if self.use_box_coding:
@@ -167,7 +159,7 @@ class Trainer(TorchTrainer):
             iou_epoch.append(iou)
             miou_epoch.append((iou > 0.7).sum().float() / len(iou))
 
-        all_input = torch.cat(all_input)  # e.g [94920, 6, 12]
+        all_input = torch.cat(all_input)
         all_out = torch.cat(all_out)
         all_diffs = torch.cat(all_diffs)
         all_gt = torch.cat(all_gt)
@@ -222,32 +214,24 @@ class Trainer(TorchTrainer):
             with open(context.log_path / f'{context.epoch}_df_train.txt', 'w') as fh:
                 fh.write(eval_df.to_string())
 
-        loss_1_epoch = torch.tensor(loss_1_epoch).mean()
-        loss_2_epoch = torch.tensor(loss_2_epoch).mean()
-        loss_3_epoch = torch.tensor(loss_3_epoch).mean()
-        loss_4_epoch = torch.tensor(loss_4_epoch).mean()
-        loss_5_epoch = torch.tensor(loss_5_epoch).mean()
-        loss_6_epoch = torch.tensor(loss_6_epoch).mean()
-
         metrics = {
             'loss': loss_epoch,
-            'old': 0.0,
             'iou': iou_epoch,
             'miou': miou_epoch,
             'iou_cva': iou_cva,
             'miou_cva': miou_cva,
             'loss_cva': loss_cva,
-            'loss_1': loss_1_epoch,
-            'loss_2': loss_2_epoch,
-            'loss_3': loss_3_epoch,
-            'loss_4': loss_4_epoch,
-            'loss_5': loss_5_epoch,
-            'loss_6': loss_6_epoch
+            'loss_1': torch.tensor(loss_lengths[0]).mean(),
+            'loss_2': torch.tensor(loss_lengths[1]).mean(),
+            'loss_3': torch.tensor(loss_lengths[2]).mean(),
+            'loss_4': torch.tensor(loss_lengths[3]).mean(),
+            'loss_5': torch.tensor(loss_lengths[4]).mean(),
+            'loss_6': torch.tensor(loss_lengths[5]).mean()
         }
 
         if context.epoch % context.cfg.tracktor_val_every == 0 and context.validate:
             with torch.no_grad():
-                metrics = {**metrics, **self.validate_tracktor(context.model, context.epoch, context.validate)}
+                metrics = {**metrics, **self.validate_tracktor(context.model, context.epoch)}
 
         return metrics
 
@@ -256,6 +240,8 @@ ex = Experiment()
 ex.add_config('experiments/cfgs/tracktor.yaml')
 ex.add_config('experiments/cfgs/train_motion_im.yaml')
 ex.add_config(ex.configurations[0]._conf['tracktor']['reid_config'])
+ex.add_named_config('correlation_model', 'experiments/cfgs/correlation_model.yaml')
+ex.add_named_config('pos_model', 'experiments/cfgs/pos_model.yaml')
 
 
 @ex.automain
@@ -292,8 +278,7 @@ def main(tracktor, reid, train, _config, _log, _run):
 
     # tracktor
     if 'oracle' in tracktor:
-        assert False, "No motion network specified"
-        # tracker = OracleTracker(obj_detect, reid_network, tracktor['tracker'], tracktor['oracle'])
+        raise ValueError('Oracle tracker not supported.')
     else:
         tracker = Tracker(obj_detect, reid_network, None, tracktor['tracker'],
                           tracktor['motion'], train['dataset_args']['train']['min_length'])
@@ -302,7 +287,6 @@ def main(tracktor, reid, train, _config, _log, _run):
     assert train['dataset_args']['train']['episode_length'] == train['dataset_args']['val']['episode_length']
     assert train['dataset_args']['train']['offset'] == train['dataset_args']['val']['offset']
     assert train['loss'] in ['mse', 'wmse', 'iou']
-    assert 'patience' not in train, 'Configure patience via scheduler_args'
 
     config = TrainingConfig(
         data=[eval(train['dataset'])] * 2,
@@ -337,14 +321,14 @@ def main(tracktor, reid, train, _config, _log, _run):
         loss_coded=tracktor['motion']['loss_coded']
     )
 
-    def validate_tracktor(motion_network, epoch, do_val):
+    def validate_tracktor(motion_network, epoch):
         # inject current network into tracker
         tracker.motion_network = motion_network
 
         time_total = 0
         num_frames = 0
         mot_accums = []
-        dataset = Datasets(train['tracktor_val_dataset'] if do_val else train['tracktor_train_dataset'])
+        dataset = Datasets(train['tracktor_val_dataset'])
         for seq in dataset:
             tracker.reset()
 

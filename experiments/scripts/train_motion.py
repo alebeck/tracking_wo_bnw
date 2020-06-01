@@ -55,12 +55,7 @@ class Trainer(TorchTrainer):
 
     def epoch(self):
         loss_epoch = []
-        loss_1_epoch = []
-        loss_2_epoch = []
-        loss_3_epoch = []
-        loss_4_epoch = []
-        loss_5_epoch = []
-        loss_6_epoch = []
+        loss_lengths = [[], [], [], [], [], []]  # losses for different episode lengths
         iou_epoch = []
         miou_epoch = []
 
@@ -73,11 +68,7 @@ class Trainer(TorchTrainer):
 
         for x, target, length in context.data_loader:
             x, target = x.cuda(), target.cuda()
-
             _input = torch.zeros(x.shape[0], context.cfg.model_args['input_length'], 6).cuda()
-            # _input[:, :, :4] = x[:, 1:, :4] - x[:, :-1, :4]  # raises error if model and dataset lengths do not match
-            # _input[:, :, 5] = 1.
-            # _input[(x[:, :, 5] == 0.)[:, :-1]] = 0.
 
             if self.use_box_coding:
                 encoded = self.box_coder.encode(list(x[:, 1:, :4]), list(x[:, :-1, :4]))
@@ -111,9 +102,7 @@ class Trainer(TorchTrainer):
 
             # calculate loss
             if self.use_box_coding:
-                # target_coded = self.box_coder.encode(list(target[:, :, :4]), list(x[:, [-1], :4]))
                 last_coded = _input[:, [-1], :4]
-                # loss = self.criterion(out[:, :, :4], torch.stack(target_coded) - last_coded)
                 loss = self.criterion_coded(out, x, target, last_coded)
             else:
                 loss = self.criterion(pred_pos, target[:, :, :4])
@@ -121,8 +110,7 @@ class Trainer(TorchTrainer):
             loss_epoch.append(loss.detach().cpu())
 
             # DIFFERENT LENGTH ANALYSIS
-            loss_lists = [loss_1_epoch, loss_2_epoch, loss_3_epoch, loss_4_epoch, loss_5_epoch, loss_6_epoch]
-            for i, loss_list in zip(range(1, 7), loss_lists):
+            for i, loss_list in zip(range(1, 7), loss_lengths):
                 mask = length == i
                 if mask.any():
                     if self.use_box_coding:
@@ -133,7 +121,6 @@ class Trainer(TorchTrainer):
 
             if not context.validate and context.epoch > 0:
                 loss.backward()
-                # nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 self.optim.step()
 
             all_x.append(x.detach().cpu())
@@ -200,13 +187,6 @@ class Trainer(TorchTrainer):
             with open(context.log_path / f'{context.epoch}_df_train.txt', 'w') as fh:
                 fh.write(eval_df.to_string())
 
-        loss_1_epoch = torch.tensor(loss_1_epoch).mean()
-        loss_2_epoch = torch.tensor(loss_2_epoch).mean()
-        loss_3_epoch = torch.tensor(loss_3_epoch).mean()
-        loss_4_epoch = torch.tensor(loss_4_epoch).mean()
-        loss_5_epoch = torch.tensor(loss_5_epoch).mean()
-        loss_6_epoch = torch.tensor(loss_6_epoch).mean()
-
         metrics = {
             'loss': loss_epoch,
             'iou': iou_epoch,
@@ -214,12 +194,12 @@ class Trainer(TorchTrainer):
             'iou_cva': iou_cva,
             'miou_cva': miou_cva,
             'loss_cva': loss_cva,
-            'loss_1': loss_1_epoch,
-            'loss_2': loss_2_epoch,
-            'loss_3': loss_3_epoch,
-            'loss_4': loss_4_epoch,
-            'loss_5': loss_5_epoch,
-            'loss_6': loss_6_epoch
+            'loss_1': torch.tensor(loss_lengths[0]).mean(),
+            'loss_2': torch.tensor(loss_lengths[1]).mean(),
+            'loss_3': torch.tensor(loss_lengths[2]).mean(),
+            'loss_4': torch.tensor(loss_lengths[3]).mean(),
+            'loss_5': torch.tensor(loss_lengths[4]).mean(),
+            'loss_6': torch.tensor(loss_lengths[5]).mean()
         }
 
         if context.validate and context.epoch % context.cfg.tracktor_val_every == 0:
@@ -268,8 +248,7 @@ def main(tracktor, reid, train, _config, _log, _run):
 
     # tracktor
     if 'oracle' in tracktor:
-        assert False, "No motion network specified"
-        # tracker = OracleTracker(obj_detect, reid_network, tracktor['tracker'], tracktor['oracle'])
+        raise ValueError('Oracle tracker not supported.')
     else:
         tracker = Tracker(obj_detect, reid_network, None, tracktor['tracker'],
                           tracktor['motion'], train['dataset_args']['train']['min_length'])

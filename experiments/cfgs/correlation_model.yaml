@@ -1,39 +1,40 @@
 tracktor:
 
   motion:
-    model: CorrelationSeq2Seq
+    model: RelativeCorrelationModel
     model_args:
       correlation_args:
         kernel_size: 1
-        patch_size: 11
+        patch_size: 7
         stride: 1
         padding: 0
         dilation_patch: 2
-      batch_norm: false
-      conv_channels: 128
+      batch_norm: true
+      conv_channels: 32
       n_box_channels: 32
-      roi_output_size: 1
+      roi_output_size: 7
+      use_roi_align: true
       avg_box_features: false
-      max_box_features: false
+      max_box_features: true
       hidden_size: 128
       input_length: 5
       n_layers: 2
-      dropout: 0.
-      correlation_only: false
+      dropout: 0.3
+      correlation_only: true
+      refine_correlation: true
       use_env_features: false
-      fixed_env: false
-      use_height_feature: false
+      fixed_env: true
       correlation_last_only: false
-      use_attention: true
       sum_lstm_layers: true
       use_pre_conv: false
 
-    network_weights: null
-    feature_level: 2
+    network_weights: output/motion/mm_final.pt
+    feature_level: 1
     data_mean: [0., 0., 0., 0.] #[-0.0901, -0.1213,  0.0529,  0.3032]
     data_std: [1., 1., 1., 1.] #[4.1137, 2.1125, 3.9754, 2.4975]
     use_cam_features: false
     use_correlation_model: true
-    use_box_coding: false
+    use_box_coding: true
     box_coding_weights: [1., 1., 1., 1.]
+    loss_coded: true
     predict_coded_a: true

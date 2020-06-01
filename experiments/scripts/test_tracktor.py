@@ -118,7 +118,7 @@ def main(tracktor, reid, _config, _log, _run):
         if tracktor['interpolate']:
             results = interpolate(results)
 
-        if 'semi' in tracktor and tracktor['semi']:
+        if 'semi_online' in tracktor and tracktor['semi_online']:
             for i, track in results.items():
                 for frame in sorted(track, reverse=True):
                     if track[frame][5] == 0:

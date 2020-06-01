@@ -15,15 +15,6 @@ NO = sys.argv[4]
 SAVE_PATH = Path(f'output/ipca_{N_COMPONENTS}_{NO}.pkl')
 assert SAVE_PATH.parent.exists()
 
-#SEQS = [
-#    'MOT17-02',
-#    'MOT17-04',
-#    'MOT17-05',
-#    'MOT17-09',
-#    'MOT17-10',
-#    'MOT17-11',
-#    'MOT17-13',
-#]
 print(f'Using sequences {SEQS}')
 
 
