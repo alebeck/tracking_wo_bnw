@@ -25,13 +25,13 @@ Our model significantly increases Tracktor performance, achieving scores compara
 
 Tracktor configuration is done through the `experiments/cfgs/tracktor.yaml`  file. The correlation model can be configured by changing the `experiments/cfgs/correlation_model.yaml` file. By default, the hybrid model with `CMCCVA-reID` inactive strategy and an inactive patience of 80 frames is evaluated.
 
-2. Run Tracktor by executing:
+Run Tracktor by executing:
 
   ```bash
   python experiments/scripts/test_tracktor.py with correlation_model
   ```
 
-3. The results are logged into the corresponding `output` directory.
+The results are logged into the corresponding `output` directory.
 
 For reproducibility, the train and test set results on the MOT17 dataset are supplied in the following:
 
